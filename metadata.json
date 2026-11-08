@@ -1,0 +1,6 @@
+{
+  "name": "SONARS — Signal Observation, Navigation, Analysis & Response System",
+  "description": "Internal intelligence and prospecting system for Devign Digital. Phase 0: Repository Audit & Architecture Baseline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

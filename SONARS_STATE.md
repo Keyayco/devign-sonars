@@ -14,7 +14,11 @@ This repository represents the initial foundation of **Lead Radar** (now transit
 2. A **Python 3** subprocess (`worker.py`) that periodically polls Reddit RSS feeds via `feedparser`, runs regex/substring keyword matching, computes additive intent scores, and alerts via Telegram.
 3. A **real-time browser dashboard** driven by Server-Sent Events (SSE).
 
-While the core Reddit polling, scoring, and SSE pipeline are functional in isolation, the repository is in a **hybrid, partially migrated state** resulting from an incomplete transition from a Replit monorepo scaffold to a standalone Node.js deployment. Multiple duplicate directories exist, files have drifted out of sync, the primary frontend relies on inline script and style blocks despite documentation claiming separation, and legacy plaintext credentials exist in historical prototype files.
+**Phase 0 Decision Updates:**
+- **Security Remediation (Completed):** Hardcoded credentials in `main.py` have been purged and replaced with environment variable lookups. The leaked bot token has been flagged for rotation via `@BotFather`.
+- **Frontend Alignment (Completed):** Root `frontend/dashboard.html` has been reconciled to load external `frontend/styles.css` and `frontend/app.js` as authoritative sources. The dead-code anomaly has been resolved while strictly preserving the vanilla JS/CSS constraint and visual design.
+- **Repository Consolidation (On Hold):** A full duplication audit between the root and `artifacts/` directories has been completed, identifying active deployment references and candidate scaffolding for removal upon approval.
+- **CIPC Access Strategy (Investigated):** Official CIPC APIVerse Hub (`developer.cipc.co.za`), POPIA compliance, and statutory extract costs have been evaluated to establish a compliant, lawful business discovery architecture.
 
 ---
 

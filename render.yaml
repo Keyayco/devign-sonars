@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: devign-sonars
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:
+      name: sonars-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: DB_PATH
+        value: /var/data/lead_monitor.db
+      - key: BASE_PATH
+        value: ""
+      - key: SONARS_ACCESS_KEY
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

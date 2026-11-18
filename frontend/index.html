@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SONARS — Devign Digital Intelligence Console</title>
+    <meta name="description" content="SONARS: Signal Observation, Navigation, Analysis & Response System for Devign Digital." />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header id="app-header">
+      <div class="hdr-left">
+        <span class="logo">SONARS</span>
+        <span class="hdr-sep" aria-hidden="true">·</span>
+        <span class="logo-sub">Devign Digital Intelligence</span>
+      </div>
+      <div class="hdr-right" id="hdr-controls" hidden>
+        <div class="sse-status" title="Server-Sent Events stream state">
+          <span class="sse-dot" id="sse-dot"></span>
+          <span id="sse-lbl">Disconnected</span>
+        </div>
+        <div class="worker-state" id="status-badge">
+          <span class="status-dot"></span>
+          <span id="status-text">Stopped</span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-logout" hidden>Sign Out</button>
+      </div>
+    </header>
+
+    <!-- Operator Authentication Gate -->
+    <section id="auth-gate" class="auth-gate" hidden>
+      <div class="auth-card">
+        <div class="auth-kicker">DEVIGN DIGITAL · INTERNAL SYSTEM</div>
+        <h1 class="auth-title">SONARS Operator Access</h1>
+        <p class="auth-desc" id="auth-desc">
+          Enter the operator access key configured for this environment to inspect signals and control the monitoring worker.
+        </p>
+        <form id="auth-form" class="auth-form">
+          <label for="auth-key-input" class="field-label">Access Key</label>
+          <input
+            type="password"
+            id="auth-key-input"
+            name="accessKey"
+            autocomplete="current-password"
+            placeholder="SONARS_ACCESS_KEY"
+            required
+          />
+          <div class="auth-error" id="auth-error" role="alert" hidden></div>
+          <button type="submit" class="btn btn-primary btn-full" id="auth-submit">Unlock Console</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Main Operations Console -->
+    <div id="console-shell" hidden>
+      <nav class="tabbar" aria-label="Console Views">
+        <button type="button" class="tab active" data-tab="overview">Operations Overview</button>
+        <button type="button" class="tab" data-tab="signals">
+          Signal Feed <span class="tab-count" id="lead-count">0</span>
+        </button>
+        <button type="button" class="tab" data-tab="config">Configuration</button>
+      </nav>
+
+      <main class="workspace">
+        <!-- Operations Overview -->
+        <section id="tab-overview" class="tab-panel active">
+          <div class="stats-grid" aria-label="Operational Metrics">
+            <div class="stat-card">
+              <div class="stat-lbl">Cycles</div>
+              <div class="stat-num" id="s-cycles">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">Signals</div>
+              <div class="stat-num" id="s-total">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">High Intent</div>
+              <div class="stat-num c-high" id="s-high">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">Alerts Sent</div>
+              <div class="stat-num" id="s-alerts">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">Dupes Skipped</div>
+              <div class="stat-num" id="s-dupes">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">Avg Intent</div>
+              <div class="stat-num" id="s-avg">—</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-lbl">Last Scan</div>
+              <div class="stat-num" id="s-scan">—</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span>Worker Control</span>
+              <span class="meta-text" id="newest-signal-meta">No signals recorded</span>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary" id="btn-start">Start Worker</button>
+              <button type="button" class="btn btn-danger" id="btn-stop" disabled>Stop Worker</button>
+              <button type="button" class="btn btn-ghost" id="btn-refresh">Refresh Data</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span>Live Worker Stream</span>
+              <div class="log-controls">
+                <select id="log-level-filter" class="select-sm" aria-label="Filter log level">
+                  <option value="ALL">All Levels</option>
+                  <option value="MATCH">MATCH</option>
+                  <option value="FEED">FEED</option>
+                  <option value="SCORE">SCORE</option>
+                  <option value="TELEGRAM">TELEGRAM</option>
+                  <option value="WARN">WARN</option>
+                  <option value="ERROR">ERROR</option>
+                  <option value="SYSTEM">SYSTEM</option>
+                </select>
+                <label class="chk-label">
+                  <input type="checkbox" id="auto-scroll" checked />
+                  Auto-scroll
+                </label>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-logs">Clear</button>
+              </div>
+            </div>
+            <div id="log-box" class="log-box" aria-live="polite">
+              <div class="log-placeholder">Worker idle. Start the worker to observe live source polling and scoring.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Signal Feed -->
+        <section id="tab-signals" class="tab-panel">
+          <div class="card" id="signals-root"></div>
+        </section>
+
+        <!-- Configuration -->
+        <section id="tab-config" class="tab-panel">
+          <div class="card" id="config-root"></div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Signal Dossier Modal -->
+    <div id="dossier-backdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="dossier-title" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <div>
+            <div class="modal-kicker" id="dossier-kicker"></div>
+            <h2 id="dossier-title">Signal Dossier</h2>
+          </div>
+          <button type="button" class="modal-close" id="dossier-close-btn" aria-label="Close dossier">✕</button>
+        </div>
+        <div class="modal-body" id="dossier-body"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

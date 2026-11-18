@@ -1,0 +1,43 @@
+# SONARS — Repository State (Rebuilt Vanilla Architecture)
+**System:** Signal Observation, Navigation, Analysis & Response System (SONARS)  
+**Target Identity:** Internal Intelligence & Prospecting Engine for Devign Digital  
+**Version:** `2.2.0`  
+
+---
+
+## 1. Current State Summary
+
+`Keyayco/devign-sonars` has been completely rebuilt from a generic React/Vite scaffold into a lightweight, production-oriented vanilla architecture aligned with `Keyayco/Devign-radar`'s proven Reddit monitoring and scoring core.
+
+### Runtime Components
+1. **Express Web & API Server (`server.js`, `routes/*.js`, `lib/*.js`)**:
+   - Serves the static Vanilla ES Module frontend (`frontend/index.html`, `frontend/styles.css`, `frontend/app.js`, `frontend/api.js`, `frontend/components/*.js`).
+   - Enforces operator authentication (`SONARS_ACCESS_KEY`) across dashboard data, worker lifecycle controls, configuration updates, and signal modification endpoints.
+   - Manages synchronous SQLite persistence (`better-sqlite3`, WAL mode) and Python subprocess supervision with SSE live streaming.
+2. **Python 3 Intelligence Worker (`worker/worker.py`, `worker/scoring.py`, `worker/adapters/reddit.py`)**:
+   - Polls configurable Reddit RSS feeds via `feedparser` (with stdlib Atom/RSS XML fallback).
+   - Preserves ETag / `If-Modified-Since` caching, HTTP 304 skipping, HTTP 429 exponential backoff, and per-feed fault isolation.
+   - Scores signals using Devign-radar's exact `HIGH_INTENT`, `LOW_INTENT`, and `LEAD_VALUE` weight tables plus deterministic evidence confidence and opportunity classification.
+   - Dispatches Telegram alerts for `medium` and `high` intent signals when credentials are present, and logs safely when credentials are omitted.
+
+---
+
+## 2. Implemented Capabilities
+
+- **Obsolete Scaffold Removal**: React, Vite, TypeScript, Tailwind, `bun.lock`, and legacy duplicated `artifacts/` structures are completely removed.
+- **Database Integrity (`lib/db.js`)**: Auto-creates parent directories for `DB_PATH` (such as `/var/data` on Render), runs in WAL mode, performs transactional schema migrations preserving existing records, and deduplicates atomically via `UNIQUE(source_type, source_entity_id)` without bloating config JSON with seen IDs.
+- **Security Hardening (`lib/security.js`)**:
+  - `SONARS_ACCESS_KEY` operator authentication with HMAC-SHA256 signed `HttpOnly; SameSite=Lax` cookies (`sonars_session`) + `Authorization: Bearer` support.
+  - Fails closed (`503`) in `NODE_ENV=production` if `SONARS_ACCESS_KEY` is missing.
+  - Login brute-force rate limiting (10 attempts / 15m per IP), strict JSON payload validation, `100kb` body size cap, SSRF feed URL validation (`https://` required by default), and secret redaction across logs and config endpoints.
+- **Automated Test Coverage (`tests/`)**:
+  - Python unit/HTTP tests for scoring parity, URL normalization, ETag/304, HTTP 429 backoff, and unavailable feed isolation.
+  - Node integration & E2E tests for SQLite persistence/migrations, authentication & validation rules, live Python worker execution over local RSS HTTP feeds, SSE streaming, and clean `SIGTERM` shutdown.
+
+---
+
+## 3. Intentionally Deferred Scope
+
+The following roadmap capabilities remain intentionally unimplemented in this release (no fabricated APIs or credentials):
+- **CIPC Registry Adapter**: Pending formal APIVerse registration and compliance review.
+- **Devign Lead Forge CRM Bridge**: Pending Lead Forge production endpoint specification and operator export workflow.

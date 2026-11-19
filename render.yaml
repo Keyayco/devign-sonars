@@ -3,7 +3,7 @@ services:
     name: devign-sonars
     runtime: docker
     plan: starter
-    autoDeploy: true
+    autoDeploy: false
     healthCheckPath: /health
     disk:
       name: sonars-data

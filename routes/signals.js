@@ -24,15 +24,42 @@ function createSignalsRouter({ dbPath } = {}) {
   router.use(security.verifyCsrf);
 
   router.get('/', (req, res) => {
-    const { intent, source, opportunity, status, q, sort, limit } = req.query;
+    const {
+      intent,
+      source,
+      opportunity,
+      observation_type,
+      review_status,
+      status,
+      suppressed,
+      q,
+      sort,
+      limit,
+      offset,
+    } = req.query;
+    const filters = {
+      intent,
+      source,
+      opportunity,
+      observation_type,
+      review_status,
+      status,
+      suppressed,
+      q,
+    };
+    const safeLimit = Math.min(500, Math.max(1, Number(limit) || 100));
+    const safeOffset = Math.max(0, Number(offset) || 0);
     const signals = db.getLeads(
-      { intent, source, opportunity, status, q, sort, limit },
+      { ...filters, sort, limit: safeLimit, offset: safeOffset },
       dbPath,
     );
+    const total = db.countLeads(filters, dbPath);
     res.json({
       signals,
       leads: signals,
-      total: signals.length,
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
     });
   });
 
@@ -61,6 +88,23 @@ function createSignalsRouter({ dbPath } = {}) {
     }
 
     res.json({ ok: true, id, status: validated.value });
+  });
+
+  router.patch('/:id/review', (req, res) => {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid signal id' });
+
+    const validated = security.validateReviewPayload(req.body);
+    if (validated.error) {
+      return res.status(400).json({ error: validated.error });
+    }
+
+    const outcome = db.updateLeadReview(id, validated.value, dbPath);
+    if (outcome.error) {
+      return res.status(outcome.code || 400).json({ error: outcome.error });
+    }
+
+    res.json({ ok: true, signal: outcome.signal });
   });
 
   return router;

@@ -23,8 +23,8 @@ test('db auto-creates nested DB_PATH, runs versioned v2 generalized schema, supp
     assert.equal(mode, 'wal');
 
     const schemaInfo = db.getSchemaVersion(dbPath);
-    assert.equal(schemaInfo.userVersion, 2);
-    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2]);
+    assert.equal(schemaInfo.userVersion, 3);
+    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2, 3]);
 
     // Insert Reddit signal
     const redditLead = db.insertLead({
@@ -135,8 +135,8 @@ test('db upgrades legacy NOT NULL Reddit schema to generalized v2 without losing
 
     const conn = db.getDb(dbPath);
     const schemaInfo = db.getSchemaVersion(dbPath);
-    assert.equal(schemaInfo.userVersion, 2);
-    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2]);
+    assert.equal(schemaInfo.userVersion, 3);
+    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2, 3]);
 
     // Verify reddit_post_id and subreddit are now nullable
     const cols = new Map(conn.prepare('PRAGMA table_info(leads)').all().map(c => [c.name, c]));
@@ -167,6 +167,113 @@ test('db upgrades legacy NOT NULL Reddit schema to generalized v2 without losing
     assert.ok(nonReddit);
     assert.equal(nonReddit.reddit_post_id, null);
     assert.equal(nonReddit.subreddit, null);
+  } finally {
+    db.closeDb(dbPath);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('db v3 migration rolls back atomically on pre-commit foreign_key_check failure', () => {
+  const tmpDir = makeTempDir();
+  const dbPath = path.join(tmpDir, 'fk_rollback.db');
+
+  try {
+    const conn = new Database(dbPath);
+    conn.pragma('foreign_keys = ON');
+    conn.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_type TEXT NOT NULL DEFAULT 'reddit',
+        source_entity_id TEXT NOT NULL,
+        source_channel TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL,
+        UNIQUE(source_type, source_entity_id)
+      );
+      INSERT INTO schema_migrations (version, name) VALUES (1, 'v1'), (2, 'v2');
+    `);
+
+    assert.throws(() => {
+      db.runMigrationV3(conn, {
+        checkFkFn: () => [{ table: 'outreach', rowid: 1, parent: 'leads', fkid: 0 }],
+      });
+    }, /Foreign key integrity check failed/);
+
+    // Verify migration v3 & added columns were completely rolled back
+    const cols = conn.prepare('PRAGMA table_info(leads)').all().map(c => c.name);
+    assert.ok(!cols.includes('observation_type'));
+    assert.ok(!cols.includes('suppressed'));
+    const v3 = conn.prepare('SELECT version FROM schema_migrations WHERE version = 3').get();
+    assert.equal(v3, undefined);
+    conn.close();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('db enforces POPIA review guardrails, suppression block on re-ingest, and retention purge', () => {
+  const tmpDir = makeTempDir();
+  const dbPath = path.join(tmpDir, 'popia.db');
+
+  try {
+    const entity = db.insertLead({
+      source_type: 'osm',
+      source_entity_id: 'node/777001',
+      source_channel: 'osm:Cape Town',
+      entity_name: 'Harbour Books',
+      title: 'Harbour Books — shop:books (no website listed)',
+      observation_type: 'digital_presence_gap',
+      opportunity_type: 'digital_need',
+      intent_score: 0,
+      intent: 'low',
+      fit_score: 62,
+      confidence_score: 80,
+      contact_eligible: 1, // Should be forced to 0 until human review_status='approved'
+      retention_until: 1000,
+    }, dbPath);
+
+    assert.ok(entity);
+    assert.equal(entity.review_status, 'pending_review');
+    assert.equal(entity.contact_eligible, 0);
+
+    // Approving allows setting contact_eligible for non-personal business entity
+    const approved = db.updateLeadReview(entity.id, {
+      review_status: 'approved',
+      contact_eligible: true,
+      review_notes: 'Verified independent bookstore without website.',
+    }, dbPath);
+    assert.equal(approved.signal.review_status, 'approved');
+    assert.equal(approved.signal.contact_eligible, 1);
+
+    // Suppressing forces contact_eligible=0 and adds to suppression_list
+    const suppressed = db.updateLeadReview(entity.id, {
+      suppressed: true,
+      review_notes: 'Do not contact requested.',
+    }, dbPath);
+    assert.equal(suppressed.signal.suppressed, 1);
+    assert.equal(suppressed.signal.contact_eligible, 0);
+    assert.equal(suppressed.signal.review_status, 'suppressed');
+    assert.equal(db.getSuppressionList(dbPath).length, 1);
+
+    // Attempting to re-insert a suppressed entity is blocked atomically
+    const reInserted = db.insertLead({
+      source_type: 'osm',
+      source_entity_id: 'node/777001',
+      title: 'Harbour Books (re-discovered)',
+    }, dbPath);
+    assert.equal(reInserted, null);
+
+    // Expired unapproved entity gets purged, while approved entity is retained
+    const expired = db.insertLead({
+      source_type: 'cipc',
+      source_entity_id: '2019/000111/07',
+      title: 'Expired Unapproved Entity',
+      retention_until: 500,
+    }, dbPath);
+    assert.ok(expired);
+    const purgeRes = db.purgeExpiredRecords(2000, dbPath);
+    assert.equal(purgeRes.deleted, 2); // suppressed entity (retention=1000) + unapproved entity (retention=500)
+    assert.equal(db.getLeadById(expired.id, dbPath), null);
   } finally {
     db.closeDb(dbPath);
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -195,6 +195,8 @@ def safe_fetch_bytes(
     url: str,
     headers: Optional[dict[str, str]] = None,
     *,
+    method: str = "GET",
+    body: Optional[bytes] = None,
     timeout: float = 15.0,
     max_redirects: int = MAX_REDIRECTS,
     allow_private_for_test: bool = False,
@@ -205,9 +207,15 @@ def safe_fetch_bytes(
       • strict scheme, hostname, and IP range validation
       • pinned IP socket dialing (DNS-rebinding mitigation)
       • re-validation of every redirect target (no blind redirect following)
+      • optional POST request body for authorized OAuth / Overpass API queries
     """
+    req_method = str(method or "GET").upper().strip()
+    if req_method not in ("GET", "POST"):
+        raise ValueError(f"Unsupported HTTP method: {req_method}")
+
     current_url = url
     req_headers = dict(headers or {})
+    req_body = body
     ssl_ctx = ssl.create_default_context()
 
     for hop in range(max_redirects + 1):
@@ -225,7 +233,7 @@ def safe_fetch_bytes(
             conn = _PinnedHTTPConnection(host, port, pinned_ip, timeout)
 
         try:
-            conn.request("GET", path, headers=req_headers)
+            conn.request(req_method, path, body=req_body, headers=req_headers)
             resp = conn.getresponse()
             status = int(resp.status)
             resp_headers = {k.lower(): v for k, v in resp.getheaders()}
@@ -237,13 +245,16 @@ def safe_fetch_bytes(
                     return {"status": status, "headers": resp_headers, "body": b""}
                 if hop >= max_redirects:
                     raise SSRFBlockedError("Exceeded maximum safe redirect hops")
+                if status in (301, 302, 303) and req_method == "POST":
+                    req_method = "GET"
+                    req_body = None
                 current_url = urllib.parse.urljoin(current_url, location)
                 continue
 
-            body = resp.read(MAX_BODY_BYTES + 1)
-            if len(body) > MAX_BODY_BYTES:
+            body_bytes = resp.read(MAX_BODY_BYTES + 1)
+            if len(body_bytes) > MAX_BODY_BYTES:
                 raise ValueError("Feed response exceeded maximum allowed size")
-            return {"status": status, "headers": resp_headers, "body": body}
+            return {"status": status, "headers": resp_headers, "body": body_bytes}
         finally:
             conn.close()
 

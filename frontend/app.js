@@ -5,6 +5,7 @@
 import * as api from './api.js';
 import { createSignalsView } from './components/signals-view.js';
 import { createDossierModal } from './components/dossier-modal.js';
+import { createDiscoveryView } from './components/discovery-view.js';
 import { createConfigView } from './components/config-view.js';
 
 const $ = id => document.getElementById(id);
@@ -72,6 +73,7 @@ const signalsView = createSignalsView($('signals-root'), {
       await loadSignals();
     }
   },
+  onQueryChange: () => loadSignals(),
   onCopyUrl: copyText,
 });
 
@@ -85,7 +87,62 @@ const dossierModal = createDossierModal($('dossier-backdrop'), {
       showToast(err.message || 'Status update failed');
     }
   },
+  async onReviewChange(id, payload) {
+    try {
+      const res = await api.updateSignalReview(id, payload);
+      if (res.signal) {
+        signalsView.replaceSignal(res.signal);
+        showToast(res.signal.suppressed ? 'Entity suppressed (Do Not Contact)' : `Review saved: ${res.signal.review_status}`);
+        return res.signal;
+      }
+      return null;
+    } catch (err) {
+      showToast(err.message || 'Review update failed');
+      return null;
+    }
+  },
   onCopyUrl: copyText,
+});
+
+const discoveryView = createDiscoveryView($('discovery-root'), {
+  async onCipcSearch(params) {
+    const res = await api.runCipcSearch(params);
+    discoveryView.setBatchResult({
+      signals: res.signals && res.signals.length ? res.signals : (res.all_found || []),
+      attribution: res.attribution,
+    });
+    showToast(`CIPC: ${res.found || 0} found, ${res.inserted || 0} added`);
+    await Promise.all([loadDiscoveryData(), loadSignals(), loadStatus()]);
+  },
+  async onOsmRun(params) {
+    const res = await api.runOsmDiscovery(params);
+    discoveryView.setBatchResult({
+      signals: res.signals && res.signals.length ? res.signals : (res.all_found || []),
+      attribution: res.attribution,
+    });
+    showToast(`OpenStreetMap: ${res.found || 0} found, ${res.inserted || 0} added`);
+    await Promise.all([loadDiscoveryData(), loadSignals(), loadStatus()]);
+  },
+  async onInspectSignal(id) {
+    let sig = signalsView.findById(id);
+    if (!sig) {
+      try {
+        const res = await api.getSignalById(id);
+        sig = res.signal || res.lead;
+      } catch {}
+    }
+    if (sig) dossierModal.open(sig);
+  },
+  async onPurgeExpired() {
+    try {
+      const res = await api.purgeExpiredRecords();
+      showToast(`Purged ${res.deleted || 0} expired unapproved record(s)`);
+      await Promise.all([loadSignals(), loadStatus()]);
+    } catch (err) {
+      showToast(err.message || 'Retention purge failed');
+    }
+  },
+  onRefreshSources: () => loadDiscoveryData(),
 });
 
 const configView = createConfigView($('config-root'), {
@@ -98,6 +155,7 @@ const configView = createConfigView($('config-root'), {
       const res = await api.saveConfig(payload);
       if (res.config) configView.setConfig(res.config);
       showToast('Configuration saved');
+      await loadDiscoveryData();
     } catch (err) {
       showToast(err.message || 'Failed to save configuration');
       throw err;
@@ -223,10 +281,26 @@ async function loadStatus() {
 
 async function loadSignals() {
   try {
-    const d = await api.getSignals({ limit: 300 });
+    const params = signalsView.getQueryParams();
+    const d = await api.getSignals(params);
     const list = d.signals || d.leads || [];
-    signalsView.setSignals(list);
-    setText('lead-count', list.length);
+    signalsView.setPage({
+      signals: list,
+      total: d.total != null ? d.total : list.length,
+      limit: d.limit || params.limit,
+      offset: d.offset != null ? d.offset : params.offset,
+    });
+  } catch {}
+}
+
+async function loadDiscoveryData() {
+  try {
+    const [srcRes, runsRes] = await Promise.all([
+      api.getDiscoverySources().catch(() => null),
+      api.getDiscoveryRuns(20).catch(() => null),
+    ]);
+    if (srcRes && srcRes.sources) discoveryView.setSources(srcRes.sources);
+    if (runsRes && Array.isArray(runsRes.runs)) discoveryView.setRuns(runsRes.runs);
   } catch {}
 }
 
@@ -256,6 +330,7 @@ async function loadInitialConsoleData() {
     api.getConfig().catch(() => null),
     loadSignals(),
     loadStatus(),
+    loadDiscoveryData(),
   ]);
 
   if (logsRes && Array.isArray(logsRes.lines)) {

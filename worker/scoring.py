@@ -168,7 +168,7 @@ def score_confidence(
     signal: CanonicalSignal, intent_factors: list[str]
 ) -> tuple[int, list[str]]:
     """Deterministic evidence confidence score (0-100)."""
-    source_bases = {"reddit": 55, "cipc": 88}
+    source_bases = {"reddit": 55, "cipc": 85, "osm": 60}
     base = source_bases.get(signal.source_type, 50)
     total = base
     factors: list[str] = [f"+{base} source:{signal.source_type}"]
@@ -194,7 +194,8 @@ def score_confidence(
         factors.append(f"-14 showcase/noise signals ({len(neg_hits)})")
 
     now = int(time.time())
-    age_hours = max(0, (now - (signal.published_utc or now)) / 3600)
+    ref_ts = signal.collected_utc or signal.published_utc or now
+    age_hours = max(0, (now - ref_ts) / 3600)
     if age_hours <= 24:
         total += 8
         factors.append("+8 fresh (<24h)")
@@ -248,7 +249,142 @@ def recommend_action(opportunity_type: str, lead_value: int, confidence_score: i
     return "Hold — insufficient evidence to justify prospecting effort."
 
 
+def _evaluate_cipc_signal(signal: CanonicalSignal) -> dict[str, Any]:
+    raw = signal.raw_payload or {}
+    status_text = str(raw.get("status", "") or "").lower()
+    reg_no = str(raw.get("registration_number", "") or "").strip()
+
+    # Company existence never assigns buying intent
+    intent_score = 0
+    intent_tier = "low"
+    intent_factors = ["0 registry entity record (no buying-intent evidence)"]
+
+    if any(bad in status_text for bad in ("deregister", "liquidat", "dissolv", "final")):
+        fit_score = 20
+        value_factors = [f"base 20 (inactive/non-trading status: {status_text or 'unknown'})"]
+    elif any(good in status_text for good in ("in business", "active", "registered")):
+        fit_score = 55
+        value_factors = [f"base 55 (verified CIPC status: {status_text})"]
+    else:
+        fit_score = 45
+        value_factors = ["base 45 (official registry record; status unconfirmed)"]
+
+    confidence_score = 80
+    confidence_factors = ["+80 source:cipc official registry"]
+    if reg_no:
+        confidence_score += 10
+        confidence_factors.append("+10 verified registration number")
+    if status_text:
+        confidence_score += 5
+        confidence_factors.append("+5 status field present")
+    if signal.url:
+        confidence_score += 3
+        confidence_factors.append("+3 traceable API source")
+    confidence_score = min(100, confidence_score)
+
+    observation_type = signal.observation_type or ("entity_verified" if reg_no else "entity_discovered")
+    opportunity_type = "entity_exists"
+    action = "Review Entity — official CIPC record verifies company existence only; does NOT indicate buying intent."
+
+    return {
+        "score": intent_score,
+        "intent_score": intent_score,
+        "intent": intent_tier,
+        "lead_value": fit_score,
+        "fit_score": fit_score,
+        "confidence_score": confidence_score,
+        "opportunity_type": opportunity_type,
+        "observation_type": observation_type,
+        "score_breakdown": {
+            "matched_keyword": signal.matched_keyword,
+            "observation_type": observation_type,
+            "intent_score": intent_score,
+            "intent_factors": intent_factors,
+            "lead_value": fit_score,
+            "value_factors": value_factors,
+            "confidence_score": confidence_score,
+            "confidence_factors": confidence_factors,
+            "opportunity_type": opportunity_type,
+            "recommended_action": action,
+            "attribution": signal.attribution or "CIPC APIVerse Companies API",
+        },
+    }
+
+
+def _evaluate_osm_signal(signal: CanonicalSignal) -> dict[str, Any]:
+    raw = signal.raw_payload or {}
+    has_website = bool(raw.get("website"))
+    has_contact = bool(raw.get("phone") or raw.get("email") or raw.get("website"))
+    has_address = bool(raw.get("address"))
+    has_coords = raw.get("lat") is not None and raw.get("lon") is not None
+
+    # Directory/map presence never automatically implies buying intent
+    intent_score = 0
+    intent_tier = "low"
+    intent_factors = ["0 map directory record (no active buying-intent statement)"]
+
+    if not has_website:
+        observation_type = "digital_presence_gap"
+        opportunity_type = "digital_need"
+        fit_score = 62
+        value_factors = [
+            "base 62 (no website tag observed in OpenStreetMap — possible digital-presence gap, NOT confirmed buying demand)"
+        ]
+        action = "Manual Qualification — no website listed in OpenStreetMap (possible digital-presence gap, not confirmed buying intent). Verify independently before any outreach."
+    else:
+        observation_type = "contact_information_found" if has_contact else (signal.observation_type or "entity_discovered")
+        opportunity_type = "entity_exists"
+        fit_score = 45
+        value_factors = ["base 45 (website tag already listed in OpenStreetMap)"]
+        action = "Hold / Audit — business already lists a website in OpenStreetMap; no buying-intent signal observed."
+
+    confidence_score = 55
+    confidence_factors = ["+55 source:osm community map record"]
+    if has_coords:
+        confidence_score += 12
+        confidence_factors.append("+12 verified coordinates")
+    if has_address:
+        confidence_score += 10
+        confidence_factors.append("+10 structured address tags")
+    if signal.category:
+        confidence_score += 8
+        confidence_factors.append(f"+8 category tag ({signal.category})")
+    if signal.url:
+        confidence_score += 5
+        confidence_factors.append("+5 traceable OSM element URL")
+    confidence_score = min(100, confidence_score)
+
+    return {
+        "score": intent_score,
+        "intent_score": intent_score,
+        "intent": intent_tier,
+        "lead_value": fit_score,
+        "fit_score": fit_score,
+        "confidence_score": confidence_score,
+        "opportunity_type": opportunity_type,
+        "observation_type": observation_type,
+        "score_breakdown": {
+            "matched_keyword": signal.matched_keyword,
+            "observation_type": observation_type,
+            "intent_score": intent_score,
+            "intent_factors": intent_factors,
+            "lead_value": fit_score,
+            "value_factors": value_factors,
+            "confidence_score": confidence_score,
+            "confidence_factors": confidence_factors,
+            "opportunity_type": opportunity_type,
+            "recommended_action": action,
+            "attribution": signal.attribution or "© OpenStreetMap contributors (ODbL: https://opendatacommons.org/licenses/odbl/)",
+        },
+    }
+
+
 def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
+    if signal.source_type == "cipc":
+        return _evaluate_cipc_signal(signal)
+    if signal.source_type == "osm":
+        return _evaluate_osm_signal(signal)
+
     intent_score, intent_factors = score_post(signal.title, signal.content)
     intent_tier = classify_intent(intent_score)
     lead_value, value_factors = compute_lead_value(signal.title, signal.content)
@@ -257,6 +393,7 @@ def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
         signal, intent_score, lead_value, confidence_score, intent_factors
     )
     action = recommend_action(opportunity_type, lead_value, confidence_score)
+    observation_type = signal.observation_type or "buying_intent_signal"
 
     return {
         "score": intent_score,
@@ -266,8 +403,10 @@ def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
         "fit_score": lead_value,
         "confidence_score": confidence_score,
         "opportunity_type": opportunity_type,
+        "observation_type": observation_type,
         "score_breakdown": {
             "matched_keyword": signal.matched_keyword,
+            "observation_type": observation_type,
             "intent_score": intent_score,
             "intent_factors": intent_factors,
             "lead_value": lead_value,
@@ -276,5 +415,6 @@ def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
             "confidence_factors": confidence_factors,
             "opportunity_type": opportunity_type,
             "recommended_action": action,
+            "attribution": signal.attribution,
         },
     }

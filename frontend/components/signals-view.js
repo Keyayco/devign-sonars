@@ -1,5 +1,5 @@
 /**
- * frontend/components/signals-view.js — SONARS Signals Table & Filtering View
+ * frontend/components/signals-view.js — SONARS Signals Table, Filtering & Pagination
  */
 
 export const OPP_LABELS = {
@@ -10,6 +10,22 @@ export const OPP_LABELS = {
   insufficient_evidence:  'Low Evidence',
   low_fit_noise:          'Noise',
   unclassified:           'Unclassified',
+};
+
+export const OBS_LABELS = {
+  buying_intent_signal:      'Buying Intent',
+  entity_discovered:         'Entity Discovered',
+  entity_verified:           'Entity Verified',
+  digital_presence_gap:      'Presence Gap',
+  contact_information_found: 'Contact Info',
+};
+
+export const REVIEW_LABELS = {
+  pending_review: 'Pending Review',
+  approved:       'Approved',
+  hold:           'On Hold',
+  rejected:       'Rejected',
+  suppressed:     'Suppressed (DNC)',
 };
 
 export function esc(s) {
@@ -30,8 +46,9 @@ export function getScores(sig) {
 
 function ageLabel(sig) {
   let mins;
-  if (sig.created_utc) {
-    mins = Math.floor((Date.now() / 1000 - sig.created_utc) / 60);
+  const ts = sig.collected_utc || sig.created_utc;
+  if (ts) {
+    mins = Math.floor((Date.now() / 1000 - ts) / 60);
   } else if (sig.created_at) {
     mins = Math.floor((Date.now() - new Date(sig.created_at + 'Z').getTime()) / 60000);
   } else {
@@ -45,14 +62,20 @@ function ageLabel(sig) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl, onFilterChange }) {
+export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl, onQueryChange }) {
   const state = {
-    signals:     [],
-    q:           '',
-    intent:      'all',
-    status:      'all',
-    opportunity: 'all',
-    sort:        'created_at',
+    signals:          [],
+    total:            0,
+    limit:            25,
+    offset:           0,
+    q:                '',
+    intent:           'all',
+    source:           'all',
+    observation_type: 'all',
+    review_status:    'all',
+    status:           'all',
+    opportunity:      'all',
+    sort:             'created_at',
   };
 
   rootEl.innerHTML = `
@@ -66,7 +89,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
           type="search"
           id="sig-search"
           class="search-input"
-          placeholder="Search title, body, channel, or keyword..."
+          placeholder="Search title, company, region, category, keyword..."
           aria-label="Search signals"
         />
         <div class="seg-group" role="group" aria-label="Intent filter">
@@ -78,6 +101,28 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
       </div>
       <div class="toolbar-row">
         <div class="filter-controls">
+          <select id="sig-source-filter" class="select-sm" aria-label="Filter by source">
+            <option value="all">Source: All</option>
+            <option value="reddit">Reddit</option>
+            <option value="cipc">CIPC</option>
+            <option value="osm">OpenStreetMap</option>
+          </select>
+          <select id="sig-obs-filter" class="select-sm" aria-label="Filter by observation type">
+            <option value="all">Observation: All</option>
+            <option value="buying_intent_signal">Buying Intent</option>
+            <option value="entity_discovered">Entity Discovered</option>
+            <option value="entity_verified">Entity Verified</option>
+            <option value="digital_presence_gap">Presence Gap</option>
+            <option value="contact_information_found">Contact Info</option>
+          </select>
+          <select id="sig-review-filter" class="select-sm" aria-label="Filter by POPIA review status">
+            <option value="all">Review: All</option>
+            <option value="pending_review">Pending Review</option>
+            <option value="approved">Approved</option>
+            <option value="hold">On Hold</option>
+            <option value="rejected">Rejected</option>
+            <option value="suppressed">Suppressed</option>
+          </select>
           <select id="sig-status-filter" class="select-sm" aria-label="Filter by status">
             <option value="all">Status: All</option>
             <option value="new">New</option>
@@ -90,6 +135,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
             <option value="active_buying_intent">Active Intent</option>
             <option value="commercial_opportunity">Commercial Opp</option>
             <option value="digital_need">Digital Need</option>
+            <option value="entity_exists">Entity Only</option>
             <option value="insufficient_evidence">Low Evidence</option>
             <option value="low_fit_noise">Noise</option>
           </select>
@@ -108,10 +154,10 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
         <thead>
           <tr>
             <th>Scores</th>
-            <th>Opportunity</th>
-            <th>Source</th>
-            <th>Signal Title</th>
-            <th>Keyword</th>
+            <th>Observation &amp; Opp</th>
+            <th>Source &amp; Provenance</th>
+            <th>Signal / Entity</th>
+            <th>Review (POPIA)</th>
             <th>Age</th>
             <th>Status</th>
             <th>Actions</th>
@@ -120,20 +166,51 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
         <tbody id="signals-tbody"></tbody>
       </table>
     </div>
+    <div class="pagination-bar" id="signals-pagination">
+      <button type="button" class="btn btn-ghost btn-sm" id="sig-prev-page" disabled>← Previous</button>
+      <span class="meta-text" id="sig-page-info">Page 1 of 1</span>
+      <button type="button" class="btn btn-ghost btn-sm" id="sig-next-page" disabled>Next →</button>
+    </div>
   `;
 
-  const tbody      = rootEl.querySelector('#signals-tbody');
-  const metaEl     = rootEl.querySelector('#signals-meta');
-  const searchEl   = rootEl.querySelector('#sig-search');
-  const statusEl   = rootEl.querySelector('#sig-status-filter');
-  const oppEl      = rootEl.querySelector('#sig-opp-filter');
-  const sortEl     = rootEl.querySelector('#sig-sort');
+  const tbody        = rootEl.querySelector('#signals-tbody');
+  const metaEl       = rootEl.querySelector('#signals-meta');
+  const searchEl     = rootEl.querySelector('#sig-search');
+  const sourceEl     = rootEl.querySelector('#sig-source-filter');
+  const obsEl        = rootEl.querySelector('#sig-obs-filter');
+  const reviewEl     = rootEl.querySelector('#sig-review-filter');
+  const statusEl     = rootEl.querySelector('#sig-status-filter');
+  const oppEl        = rootEl.querySelector('#sig-opp-filter');
+  const sortEl       = rootEl.querySelector('#sig-sort');
+  const prevBtn      = rootEl.querySelector('#sig-prev-page');
+  const nextBtn      = rootEl.querySelector('#sig-next-page');
+  const pageInfoEl   = rootEl.querySelector('#sig-page-info');
+
+  function currentQueryParams() {
+    return {
+      q:                state.q,
+      intent:           state.intent,
+      source:           state.source,
+      observation_type: state.observation_type,
+      review_status:    state.review_status,
+      status:           state.status,
+      opportunity:      state.opportunity,
+      sort:             state.sort,
+      limit:            state.limit,
+      offset:           state.offset,
+    };
+  }
+
+  function triggerQuery(resetOffset = true) {
+    if (resetOffset) state.offset = 0;
+    onQueryChange?.(currentQueryParams());
+  }
 
   let searchTimer = null;
   searchEl.addEventListener('input', () => {
     state.q = searchEl.value.trim();
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => render(), 150);
+    searchTimer = setTimeout(() => triggerQuery(true), 220);
   });
 
   rootEl.querySelectorAll('[data-intent]').forEach(btn => {
@@ -142,24 +219,27 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
       rootEl.querySelectorAll('[data-intent]').forEach(b =>
         b.classList.toggle('active', b === btn)
       );
-      render();
+      triggerQuery(true);
     });
   });
 
-  statusEl.addEventListener('change', () => {
-    state.status = statusEl.value;
-    render();
+  sourceEl.addEventListener('change', () => { state.source = sourceEl.value; triggerQuery(true); });
+  obsEl.addEventListener('change', () => { state.observation_type = obsEl.value; triggerQuery(true); });
+  reviewEl.addEventListener('change', () => { state.review_status = reviewEl.value; triggerQuery(true); });
+  statusEl.addEventListener('change', () => { state.status = statusEl.value; triggerQuery(true); });
+  oppEl.addEventListener('change', () => { state.opportunity = oppEl.value; triggerQuery(true); });
+  sortEl.addEventListener('change', () => { state.sort = sortEl.value; triggerQuery(true); });
+
+  prevBtn.addEventListener('click', () => {
+    if (state.offset <= 0) return;
+    state.offset = Math.max(0, state.offset - state.limit);
+    triggerQuery(false);
   });
 
-  oppEl.addEventListener('change', () => {
-    state.opportunity = oppEl.value;
-    render();
-  });
-
-  sortEl.addEventListener('change', () => {
-    state.sort = sortEl.value;
-    render();
-    onFilterChange?.({ sort: state.sort });
+  nextBtn.addEventListener('click', () => {
+    if (state.offset + state.limit >= state.total) return;
+    state.offset += state.limit;
+    triggerQuery(false);
   });
 
   tbody.addEventListener('click', e => {
@@ -188,54 +268,19 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     onStatusChange?.(id, newStatus);
   });
 
-  function applyFiltersAndSort() {
-    let list = [...state.signals];
-    if (state.intent !== 'all') {
-      list = list.filter(s => s.intent === state.intent);
-    }
-    if (state.status !== 'all') {
-      list = list.filter(s => s.status === state.status);
-    }
-    if (state.opportunity !== 'all') {
-      list = list.filter(s => (s.opportunity_type || 'unclassified') === state.opportunity);
-    }
-    if (state.q) {
-      const q = state.q.toLowerCase();
-      list = list.filter(s =>
-        (s.title || '').toLowerCase().includes(q) ||
-        (s.content || '').toLowerCase().includes(q) ||
-        (s.matched_keyword || '').toLowerCase().includes(q) ||
-        (s.source_channel || s.subreddit || '').toLowerCase().includes(q) ||
-        (s.entity_name || '').toLowerCase().includes(q)
-      );
-    }
-
-    list.sort((a, b) => {
-      const sa = getScores(a);
-      const sb = getScores(b);
-      switch (state.sort) {
-        case 'score':      return sb.intentScore - sa.intentScore;
-        case 'value':      return sb.fitScore - sa.fitScore;
-        case 'confidence': return sb.confScore - sa.confScore;
-        case 'composite':
-          return (sb.intentScore + sb.fitScore + sb.confScore) - (sa.intentScore + sa.fitScore + sa.confScore);
-        default:
-          return (b.created_utc || 0) - (a.created_utc || 0) || (b.id || 0) - (a.id || 0);
-      }
-    });
-
-    return list;
-  }
-
   function renderRow(s) {
     const { intentScore, fitScore, confScore } = getScores(s);
     const opp = s.opportunity_type || 'unclassified';
     const oppLabel = OPP_LABELS[opp] || opp;
+    const obs = s.observation_type || 'buying_intent_signal';
+    const obsLabel = OBS_LABELS[obs] || obs;
+    const rev = s.suppressed ? 'suppressed' : (s.review_status || 'pending_review');
+    const revLabel = REVIEW_LABELS[rev] || rev;
     const srcType = s.source_type || 'reddit';
     const srcChan = s.source_channel || s.subreddit || '';
 
     return `
-      <tr>
+      <tr class="${s.suppressed ? 'row-suppressed' : ''}">
         <td>
           <div class="score-stack">
             <div class="score-row">
@@ -255,7 +300,12 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
             </div>
           </div>
         </td>
-        <td><span class="opp-tag opp-${esc(opp)}">${esc(oppLabel)}</span></td>
+        <td>
+          <div class="source-meta">
+            <span class="obs-tag">${esc(obsLabel)}</span>
+            <span class="opp-tag opp-${esc(opp)}">${esc(oppLabel)}</span>
+          </div>
+        </td>
         <td>
           <div class="source-meta">
             <span class="source-type">${esc(srcType)}</span>
@@ -266,8 +316,11 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
           <button type="button" class="title-btn" data-action="inspect" data-id="${s.id}">
             ${esc(s.title)}
           </button>
+          <div class="kw-text">${esc(s.matched_keyword)}${s.attribution ? ` · ${esc(s.attribution.slice(0, 42))}` : ''}</div>
         </td>
-        <td><span class="kw-text">${esc(s.matched_keyword)}</span></td>
+        <td>
+          <span class="rev-badge rev-${esc(rev)}">${esc(revLabel)}</span>
+        </td>
         <td><span class="age-text">${esc(ageLabel(s))}</span></td>
         <td>
           <select class="select-sm" data-action="status" data-id="${s.id}" aria-label="Lead status">
@@ -289,27 +342,48 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
   }
 
   function render() {
-    const filtered = applyFiltersAndSort();
-    metaEl.textContent = `${state.signals.length} total · ${filtered.length} shown`;
+    const startIdx = state.total === 0 ? 0 : state.offset + 1;
+    const endIdx   = state.offset + state.signals.length;
+    metaEl.textContent = `${state.total} matching · showing ${startIdx}–${endIdx}`;
 
-    if (filtered.length === 0) {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.limit));
+    const currentPage = Math.floor(state.offset / state.limit) + 1;
+    pageInfoEl.textContent = `Page ${currentPage} of ${totalPages}`;
+    prevBtn.disabled = state.offset <= 0;
+    nextBtn.disabled = state.offset + state.limit >= state.total;
+
+    if (state.signals.length === 0) {
       tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No matching signals found.</td></tr>';
       return;
     }
 
-    tbody.innerHTML = filtered.map(renderRow).join('');
+    tbody.innerHTML = state.signals.map(renderRow).join('');
   }
 
   return {
-    setSignals(list) {
-      state.signals = Array.isArray(list) ? list : [];
+    setPage({ signals, total, limit, offset }) {
+      state.signals = Array.isArray(signals) ? signals : [];
+      if (total != null) state.total = Number(total);
+      if (limit != null) state.limit = Number(limit);
+      if (offset != null) state.offset = Number(offset);
       render();
     },
+    getQueryParams: currentQueryParams,
     prependSignal(sig) {
-      if (!sig || state.signals.some(s => s.id === sig.id)) return false;
+      if (!sig || state.offset > 0 || state.signals.some(s => s.id === sig.id)) return false;
       state.signals.unshift(sig);
+      if (state.signals.length > state.limit) state.signals.pop();
+      state.total += 1;
       render();
       return true;
+    },
+    replaceSignal(updated) {
+      if (!updated) return;
+      const idx = state.signals.findIndex(s => s.id === updated.id);
+      if (idx !== -1) {
+        state.signals[idx] = updated;
+        render();
+      }
     },
     getSignals() {
       return state.signals;

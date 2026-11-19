@@ -14,9 +14,10 @@ const fs      = require('fs');
 const db       = require('./lib/db');
 const security = require('./lib/security');
 const wm       = require('./lib/worker-manager');
-const { createHealthRouter }  = require('./routes/health');
-const { createSignalsRouter } = require('./routes/signals');
-const { createMonitorRouter } = require('./routes/monitor');
+const { createHealthRouter }    = require('./routes/health');
+const { createSignalsRouter }   = require('./routes/signals');
+const { createMonitorRouter }   = require('./routes/monitor');
+const { createDiscoveryRouter } = require('./routes/discovery');
 
 const FRONTEND_DIR = path.join(__dirname, 'frontend');
 const INDEX_HTML   = path.join(FRONTEND_DIR, 'index.html');
@@ -29,6 +30,7 @@ function createApp({
   workerManager = wm,
   feedLookup,
   allowTestFeeds = false,
+  runDiscovery,
 } = {}) {
   const app  = express();
   const BASE = String(basePath || '').replace(/\/+$/, '');
@@ -66,10 +68,11 @@ function createApp({
   authRouter.post('/logout', authHandlers.logout);
   app.use(BASE + '/api/auth', authRouter);
 
-  // Authenticated Signal & Monitor APIs
-  app.use(BASE + '/api/signals', createSignalsRouter({ dbPath }));
-  app.use(BASE + '/api/leads',   createSignalsRouter({ dbPath }));
-  app.use(BASE + '/api',         createMonitorRouter({ configPath, seedPath, dbPath, workerManager, feedLookup, allowTestFeeds }));
+  // Authenticated Signal, Discovery & Monitor APIs
+  app.use(BASE + '/api/signals',   createSignalsRouter({ dbPath }));
+  app.use(BASE + '/api/leads',     createSignalsRouter({ dbPath }));
+  app.use(BASE + '/api/discovery', createDiscoveryRouter({ dbPath, configPath, workerManager, runDiscovery }));
+  app.use(BASE + '/api',           createMonitorRouter({ configPath, seedPath, dbPath, workerManager, feedLookup, allowTestFeeds }));
 
   // Serve static Vanilla frontend shell (no secrets or data embedded)
   function serveDashboard(_req, res) {

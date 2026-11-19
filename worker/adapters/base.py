@@ -10,18 +10,34 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 
+OBSERVATION_TYPES = (
+    "entity_discovered",
+    "entity_verified",
+    "digital_presence_gap",
+    "contact_information_found",
+    "buying_intent_signal",
+)
+
+
 @dataclass
 class CanonicalSignal:
-    source_type: str              # e.g. 'reddit', future 'cipc'
+    source_type: str              # e.g. 'reddit', 'cipc', 'osm'
     source_entity_id: str         # globally unique key within source_type
-    source_channel: str           # e.g. 'r/forhire'
-    entity_name: str              # poster handle or company name
-    title: str                    # headline or entity name
-    content: str                  # sanitized body / summary
+    source_channel: str           # e.g. 'r/forhire', 'cipc-apiverse', 'osm-cape-town'
+    entity_name: str              # poster handle or business/company name
+    title: str                    # headline or entity display title
+    content: str                  # sanitized body / evidence summary
     url: str                      # canonical source URL
-    matched_keyword: str          # triggering keyword or discovery rule
-    published_utc: int            # Unix UTC timestamp
+    matched_keyword: str          # triggering keyword or discovery category/query
+    published_utc: int            # Unix UTC timestamp of record or collection
     raw_payload: dict[str, Any] = field(default_factory=dict)
+    observation_type: str = "buying_intent_signal"
+    attribution: Optional[str] = None
+    collected_utc: Optional[int] = None
+    category: str = ""
+    region: str = ""
+    is_personal_info: bool = False
+    contact_eligible: bool = False
 
 
 LogFn = Callable[[str, str], None]

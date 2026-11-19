@@ -100,6 +100,45 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn("AAH_SecretToken_XYZ", clean)
         self.assertIn("bot[REDACTED]", clean)
 
+    def test_cipc_and_osm_signals_do_not_assign_buying_intent(self):
+        cipc_sig = CanonicalSignal(
+            source_type="cipc",
+            source_entity_id="2020/111222/07",
+            source_channel="cipc-apiverse",
+            entity_name="Horizon Web Holdings (Pty) Ltd",
+            title="Horizon Web Holdings (Pty) Ltd (2020/111222/07)",
+            content="Official CIPC company record",
+            url="https://api.cipc.example",
+            matched_keyword="Horizon",
+            published_utc=1760000000,
+            observation_type="entity_verified",
+            raw_payload={"registration_number": "2020/111222/07", "status": "In Business"},
+        )
+        ev_cipc = evaluate_signal(cipc_sig)
+        self.assertEqual(ev_cipc["intent_score"], 0)
+        self.assertEqual(ev_cipc["intent"], "low")
+        self.assertEqual(ev_cipc["observation_type"], "entity_verified")
+        self.assertEqual(ev_cipc["opportunity_type"], "entity_exists")
+
+        osm_gap = CanonicalSignal(
+            source_type="osm",
+            source_entity_id="node/987654",
+            source_channel="osm:Cape Town",
+            entity_name="Harbour Coffee",
+            title="Harbour Coffee — amenity:cafe (no website listed)",
+            content="No website tag in OpenStreetMap",
+            url="https://www.openstreetmap.org/node/987654",
+            matched_keyword="restaurants_hospitality",
+            published_utc=1760000000,
+            observation_type="digital_presence_gap",
+            category="amenity:cafe",
+            raw_payload={"lat": -33.91, "lon": 18.42, "address": "Cape Town", "website": None},
+        )
+        ev_osm = evaluate_signal(osm_gap)
+        self.assertEqual(ev_osm["intent_score"], 0)
+        self.assertEqual(ev_osm["observation_type"], "digital_presence_gap")
+        self.assertEqual(ev_osm["opportunity_type"], "digital_need")
+
 
 if __name__ == "__main__":
     unittest.main()

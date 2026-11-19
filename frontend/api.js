@@ -117,6 +117,41 @@ export function updateSignalStatus(id, status) {
   });
 }
 
+export function updateSignalReview(id, payload) {
+  return request(`/signals/${id}/review`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDiscoverySources() {
+  return request('/discovery/sources');
+}
+
+export function getDiscoveryRuns(limit = 20) {
+  return request(`/discovery/runs?limit=${encodeURIComponent(limit)}`);
+}
+
+export function runCipcSearch(payload) {
+  return request('/discovery/cipc/search', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function runOsmDiscovery(payload) {
+  return request('/discovery/osm/run', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function purgeExpiredRecords() {
+  return request('/discovery/retention/purge', {
+    method: 'POST',
+  });
+}
+
 export function openStream(handlers = {}) {
   const es = new EventSource(API + '/stream', { withCredentials: true });
   es.onopen = () => handlers.onOpen?.();

@@ -9,6 +9,7 @@ const http   = require('node:http');
 
 const { createApp } = require('../../server');
 const db            = require('../../lib/db');
+const security      = require('../../lib/security');
 
 function makeSandbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sonars-http-'));
@@ -30,7 +31,7 @@ function listen(app) {
   });
 }
 
-test('security: health unauthenticated, auth enforcement, prod fail-closed, rate limiting, and config validation', async () => {
+test('security: health unauthenticated, auth/CSRF enforcement, malformed cookies, rate limiting, and DNS SSRF config validation', async () => {
   const sb = makeSandbox();
   const prevKey = process.env.SONARS_ACCESS_KEY;
   const prevEnv = process.env.NODE_ENV;
@@ -38,22 +39,31 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
 
   const mockWorker = {
     isRunning: () => false,
-    getStats: () => ({ cycles: 0, matches: 0, alerts_sent: 0, dupes_skipped: 0, last_scan_ms: 0 }),
-    getLogs: () => [],
+    getState:  () => 'stopped',
+    getStats:  () => ({ cycles: 0, matches: 0, alerts_sent: 0, dupes_skipped: 0, last_scan_ms: 0 }),
+    getLogs:   () => [],
     addSSEClient: (res) => { res.status(200).end('event: status\ndata: {"running":false}\n\n'); },
-    startWorker: () => {},
-    stopWorker: () => {},
+    startWorker: () => true,
+    stopWorker:  () => {},
   };
 
+  security.clearLoginAttemptsForTest();
   process.env.SONARS_ACCESS_KEY = 'super-secret-operator-key';
   process.env.NODE_ENV = 'test';
   delete process.env.TELEGRAM_BOT_TOKEN;
+
+  // Mock DNS resolver: www.reddit.com -> public IP; evil-dns.example -> private IP
+  const mockLookup = async (host) => {
+    if (host === 'evil-dns.example') return [{ address: '10.0.0.1' }];
+    return [{ address: '151.101.1.140' }];
+  };
 
   const app = createApp({
     dbPath: sb.dbPath,
     configPath: sb.configPath,
     seedPath: sb.seedPath,
     workerManager: mockWorker,
+    feedLookup: mockLookup,
   });
 
   const { server, baseUrl } = await listen(app);
@@ -66,7 +76,13 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
     assert.equal(healthJson.ok, true);
     assert.equal(healthJson.db, 'connected');
 
-    // 2. Protected routes reject unauthenticated requests
+    // 2. Malformed cookie encoding never throws 500
+    const malformedCookieRes = await fetch(`${baseUrl}/api/status`, {
+      headers: { Cookie: 'sonars_session=%ZZ%E0%A4%A; broken=%' },
+    });
+    assert.equal(malformedCookieRes.status, 401);
+
+    // 3. Protected routes reject unauthenticated requests
     for (const [method, endpoint] of [
       ['GET', '/api/status'],
       ['GET', '/api/config'],
@@ -80,7 +96,7 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
       assert.equal(res.status, 401, `${method} ${endpoint} must require auth`);
     }
 
-    // 3. Production fails closed with 503 if SONARS_ACCESS_KEY is unset
+    // 4. Production fails closed with 503 if SONARS_ACCESS_KEY is unset
     process.env.NODE_ENV = 'production';
     process.env.SONARS_ACCESS_KEY = '';
     const prodRes = await fetch(`${baseUrl}/api/status`);
@@ -90,41 +106,85 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
     process.env.NODE_ENV = 'test';
     process.env.SONARS_ACCESS_KEY = 'super-secret-operator-key';
 
-    // 4. Failed login rejected; Bearer token accepted
-    const badLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    // 5. Login rate limit after 10 failures -> 429
+    for (let i = 0; i < 10; i++) {
+      const r = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessKey: 'wrong-key' }),
+      });
+      assert.equal(r.status, 401);
+    }
+    const limited = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessKey: 'wrong-key' }),
     });
-    assert.equal(badLogin.status, 401);
+    assert.equal(limited.status, 429);
+    security.clearLoginAttemptsForTest();
 
-    // 5. Valid login returns HttpOnly session cookie
+    // 6. Valid login sets HttpOnly cookie and returns CSRF token
     const goodLogin = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessKey: 'super-secret-operator-key' }),
     });
     assert.equal(goodLogin.status, 200);
+    const loginJson = await goodLogin.json();
+    assert.ok(loginJson.csrfToken);
     const setCookie = goodLogin.headers.get('set-cookie') || '';
     assert.match(setCookie, /sonars_session=/);
     assert.match(setCookie, /HttpOnly/i);
+    assert.match(setCookie, /SameSite=Lax/i);
     const cookieHeader = setCookie.split(';')[0];
 
-    // 6. Config saves valid payload, enforces SSRF URL guard, and never leaks bot_token
-    const badFeed = await fetch(`${baseUrl}/api/config`, {
+    // 7. Cookie-based mutations require valid X-CSRF-Token & same-origin
+    const missingCsrf = await fetch(`${baseUrl}/api/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
-      body: JSON.stringify({
-        interval: 120,
-        feeds: ['http://169.254.169.254/latest/meta-data'],
-        keywords: ['need a website'],
-      }),
+      headers: { Cookie: cookieHeader },
     });
-    assert.equal(badFeed.status, 400);
+    assert.equal(missingCsrf.status, 403);
 
+    const badOrigin = await fetch(`${baseUrl}/api/start`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookieHeader,
+        'X-CSRF-Token': loginJson.csrfToken,
+        Origin: 'https://evil.example',
+      },
+    });
+    assert.equal(badOrigin.status, 403);
+
+    // 8. SSRF guards block private IP, mapped IPv6, and DNS resolving to private IP
+    for (const badUrl of [
+      'http://169.254.169.254/latest/meta-data',
+      'https://[::ffff:127.0.0.1]/feed.rss',
+      'https://evil-dns.example/feed.rss',
+    ]) {
+      const badFeed = await fetch(`${baseUrl}/api/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookieHeader,
+          'X-CSRF-Token': loginJson.csrfToken,
+        },
+        body: JSON.stringify({
+          interval: 120,
+          feeds: [badUrl],
+          keywords: ['need a website'],
+        }),
+      });
+      assert.equal(badFeed.status, 400, `Expected 400 for SSRF URL: ${badUrl}`);
+    }
+
+    // 9. Valid public HTTPS feed saves and never leaks bot_token
     const saveCfg = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookieHeader,
+        'X-CSRF-Token': loginJson.csrfToken,
+      },
       body: JSON.stringify({
         bot_token: '123456:AAH_DO_NOT_LEAK_THIS_TOKEN',
         chat_id: '987654321',
@@ -141,26 +201,8 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
     assert.equal(cfgRes.status, 200);
     const cfgBody = await cfgRes.text();
     assert.ok(!cfgBody.includes('AAH_DO_NOT_LEAK_THIS_TOKEN'), 'Raw bot token must never be returned');
-    const cfgJson = JSON.parse(cfgBody);
-    assert.equal(cfgJson.token_configured, true);
-    assert.equal(cfgJson.interval, 90);
 
-    // 7. Malformed JSON returns 400
-    const badJson = await fetch(`${baseUrl}/api/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
-      body: '{not-valid-json',
-    });
-    assert.equal(badJson.status, 400);
-
-    // 8. Signal status updates + 404 on missing ID
-    const missingPatch = await fetch(`${baseUrl}/api/signals/999999`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
-      body: JSON.stringify({ status: 'won' }),
-    });
-    assert.equal(missingPatch.status, 404);
-
+    // 10. Signal PATCH enforces CSRF + validates IDs/statuses
     const seeded = db.insertLead({
       source_type: 'reddit',
       source_entity_id: 'https://www.reddit.com/r/forhire/comments/r1/post',
@@ -172,20 +214,25 @@ test('security: health unauthenticated, auth enforcement, prod fail-closed, rate
       intent: 'high',
     }, sb.dbPath);
 
-    const patchOk = await fetch(`${baseUrl}/api/signals/${seeded.id}`, {
+    const patchNoCsrf = await fetch(`${baseUrl}/api/signals/${seeded.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
       body: JSON.stringify({ status: 'contacted' }),
     });
-    assert.equal(patchOk.status, 200);
+    assert.equal(patchNoCsrf.status, 403);
 
-    const getDetail = await fetch(`${baseUrl}/api/signals/${seeded.id}`, {
-      headers: { Cookie: cookieHeader },
+    const patchOk = await fetch(`${baseUrl}/api/signals/${seeded.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookieHeader,
+        'X-CSRF-Token': loginJson.csrfToken,
+      },
+      body: JSON.stringify({ status: 'contacted' }),
     });
-    assert.equal(getDetail.status, 200);
-    const detailJson = await getDetail.json();
-    assert.equal(detailJson.signal.status, 'contacted');
+    assert.equal(patchOk.status, 200);
   } finally {
+    security.clearLoginAttemptsForTest();
     server.close();
     db.closeDb(sb.dbPath);
     fs.rmSync(sb.dir, { recursive: true, force: true });

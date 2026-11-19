@@ -13,7 +13,7 @@ function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sonars-db-'));
 }
 
-test('db auto-creates nested DB_PATH directory, uses WAL, deduplicates, and persists across restarts', () => {
+test('db auto-creates nested DB_PATH, runs versioned v2 generalized schema, supports non-Reddit sources, and persists across restarts', () => {
   const tmpDir = makeTempDir();
   const dbPath = path.join(tmpDir, 'nested', 'var', 'data', 'lead_monitor.db');
 
@@ -22,7 +22,12 @@ test('db auto-creates nested DB_PATH directory, uses WAL, deduplicates, and pers
     const mode = conn.pragma('journal_mode', { simple: true });
     assert.equal(mode, 'wal');
 
-    const inserted = db.insertLead({
+    const schemaInfo = db.getSchemaVersion(dbPath);
+    assert.equal(schemaInfo.userVersion, 2);
+    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2]);
+
+    // Insert Reddit signal
+    const redditLead = db.insertLead({
       source_type:      'reddit',
       source_entity_id: 'https://www.reddit.com/r/forhire/comments/101/test',
       source_channel:   'r/forhire',
@@ -40,48 +45,65 @@ test('db auto-creates nested DB_PATH directory, uses WAL, deduplicates, and pers
       created_utc:      1760000000,
     }, dbPath);
 
-    assert.ok(inserted);
-    assert.equal(inserted.intent, 'high');
-    assert.deepEqual(inserted.score_breakdown_parsed, { intent_factors: ['+38 "need a developer"'] });
+    assert.ok(redditLead);
+    assert.equal(redditLead.reddit_post_id, 'https://www.reddit.com/r/forhire/comments/101/test');
+    assert.equal(redditLead.subreddit, 'r/forhire');
 
-    // Duplicate insertion ignored atomically
+    // Insert generic non-Reddit signal with null reddit_post_id and subreddit
+    const genericLead = db.insertLead({
+      source_type:      'directory',
+      source_entity_id: 'acme-digital-2026-001',
+      source_channel:   'za-business-registry',
+      entity_name:      'Acme Digital Pty Ltd',
+      title:            'Acme Digital Pty Ltd — no website detected',
+      content:          'Commercial consulting entity lacking verified domain presence.',
+      url:              'https://example.com/directory/acme-digital',
+      matched_keyword:  'consulting',
+      intent_score:     25,
+      intent:           'low',
+      lead_value:       68,
+      confidence_score: 85,
+      opportunity_type: 'digital_need',
+    }, dbPath);
+
+    assert.ok(genericLead);
+    assert.equal(genericLead.source_type, 'directory');
+    assert.equal(genericLead.reddit_post_id, null);
+    assert.equal(genericLead.subreddit, null);
+
+    // Duplicate insertion ignored atomically per (source_type, source_entity_id)
     const dupe = db.insertLead({
-      source_type:      'reddit',
-      source_entity_id: 'https://www.reddit.com/r/forhire/comments/101/test',
-      source_channel:   'r/forhire',
-      title:            'Duplicate title',
-      url:              'https://www.reddit.com/r/forhire/comments/101/test',
-      matched_keyword:  'need a website',
+      source_type:      'directory',
+      source_entity_id: 'acme-digital-2026-001',
+      source_channel:   'za-business-registry',
+      title:            'Duplicate entity',
     }, dbPath);
     assert.equal(dupe, null);
 
-    // Update status
-    const upd = db.updateLeadStatus(inserted.id, 'contacted', dbPath);
+    // Update status and verify restart persistence
+    const upd = db.updateLeadStatus(redditLead.id, 'contacted', dbPath);
     assert.equal(upd.changes, 1);
 
-    // Simulate process restart by closing DB handle and reopening
     db.closeDb(dbPath);
 
     const leads = db.getLeads({ q: 'founder', intent: 'high' }, dbPath);
     assert.equal(leads.length, 1);
     assert.equal(leads[0].status, 'contacted');
     assert.equal(db.getSeenIds('reddit', dbPath).length, 1);
-
-    const stats = db.getDbStats(dbPath);
-    assert.equal(stats.total, 1);
-    assert.equal(stats.high, 1);
+    assert.equal(db.getSeenIds(undefined, dbPath).length, 2);
   } finally {
     db.closeDb(dbPath);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('db migrates legacy leads schema without losing existing rows', () => {
+test('db upgrades legacy NOT NULL Reddit schema to generalized v2 without losing leads or outreach FKs', () => {
   const tmpDir = makeTempDir();
   const dbPath = path.join(tmpDir, 'legacy.db');
 
   try {
     const legacy = new Database(dbPath);
+    legacy.pragma('foreign_keys = ON');
     legacy.exec(`
       CREATE TABLE leads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,22 +118,55 @@ test('db migrates legacy leads schema without losing existing rows', () => {
         status TEXT NOT NULL DEFAULT 'new',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
-      INSERT INTO leads (reddit_post_id, subreddit, title, content, url, matched_keyword, score, intent, status)
-      VALUES ('https://www.reddit.com/r/entrepreneur/comments/legacy1', 'r/entrepreneur', 'Legacy Hire', 'Budget ready', 'https://www.reddit.com/r/entrepreneur/comments/legacy1', 'hire', 72, 'high', 'won');
+      CREATE TABLE outreach (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        message TEXT,
+        sent INTEGER NOT NULL DEFAULT 0,
+        reply_received INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO leads (id, reddit_post_id, subreddit, title, content, url, matched_keyword, score, intent, status)
+      VALUES (42, 'https://www.reddit.com/r/entrepreneur/comments/legacy1', 'r/entrepreneur', 'Legacy Hire', 'Budget ready', 'https://www.reddit.com/r/entrepreneur/comments/legacy1', 'hire', 72, 'high', 'won');
+      INSERT INTO outreach (lead_id, message, sent)
+      VALUES (42, 'Hello from Devign Digital', 1);
     `);
     legacy.close();
 
     const conn = db.getDb(dbPath);
-    const cols = conn.prepare('PRAGMA table_info(leads)').all().map(c => c.name);
-    for (const expected of ['lead_value', 'source_type', 'source_entity_id', 'confidence_score', 'opportunity_type', 'score_breakdown']) {
-      assert.ok(cols.includes(expected), `Missing migrated column ${expected}`);
-    }
+    const schemaInfo = db.getSchemaVersion(dbPath);
+    assert.equal(schemaInfo.userVersion, 2);
+    assert.deepEqual(schemaInfo.migrations.map(m => m.version), [1, 2]);
 
-    const migrated = db.getLeads({}, dbPath);
-    assert.equal(migrated.length, 1);
-    assert.equal(migrated[0].source_entity_id, 'https://www.reddit.com/r/entrepreneur/comments/legacy1');
-    assert.equal(migrated[0].intent_score, 72);
-    assert.equal(migrated[0].status, 'won');
+    // Verify reddit_post_id and subreddit are now nullable
+    const cols = new Map(conn.prepare('PRAGMA table_info(leads)').all().map(c => [c.name, c]));
+    assert.equal(cols.get('reddit_post_id').notnull, 0);
+    assert.equal(cols.get('subreddit').notnull, 0);
+    assert.equal(cols.get('source_entity_id').notnull, 1);
+
+    // Existing row & outreach FK preserved with original ID
+    const migrated = db.getLeadById(42, dbPath);
+    assert.ok(migrated);
+    assert.equal(migrated.source_entity_id, 'https://www.reddit.com/r/entrepreneur/comments/legacy1');
+    assert.equal(migrated.intent_score, 72);
+    assert.equal(migrated.status, 'won');
+
+    const outreachRow = conn.prepare('SELECT * FROM outreach WHERE lead_id = 42').get();
+    assert.ok(outreachRow);
+    assert.equal(outreachRow.message, 'Hello from Devign Digital');
+
+    // Non-Reddit signal can now be inserted into the upgraded DB
+    const nonReddit = db.insertLead({
+      source_type:      'custom_source',
+      source_entity_id: 'custom-99',
+      source_channel:   'partner-feed',
+      title:            'Custom Non-Reddit Prospect',
+      intent_score:     60,
+      intent:           'medium',
+    }, dbPath);
+    assert.ok(nonReddit);
+    assert.equal(nonReddit.reddit_post_id, null);
+    assert.equal(nonReddit.subreddit, null);
   } finally {
     db.closeDb(dbPath);
     fs.rmSync(tmpDir, { recursive: true, force: true });

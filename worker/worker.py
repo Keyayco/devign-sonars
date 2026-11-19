@@ -103,7 +103,8 @@ def send_telegram(
         log("ERROR", f"Telegram HTTP {status_code}: {body_preview}")
         return False
     except Exception as exc:
-        log("ERROR", f"Telegram request failed: {sanitize_log_text(str(exc))}")
+        err_msg = sanitize_log_text(str(exc)).replace(token, "[REDACTED]")
+        log("ERROR", f"Telegram request failed: {err_msg}")
         return False
 
 
@@ -122,7 +123,11 @@ def load_seed_ids(cfg: dict[str, Any]) -> set[str]:
 
 def build_adapters(cfg: dict[str, Any]) -> list[SourceAdapter]:
     adapters: list[SourceAdapter] = []
-    reddit = RedditAdapter(cfg, log_fn=log)
+    allow_test_feeds = (
+        os.environ.get("NODE_ENV") == "test"
+        and os.environ.get("SONARS_TEST_ALLOW_LOCAL_HTTP") == "1"
+    )
+    reddit = RedditAdapter(cfg, log_fn=log, allow_local_test_feeds=allow_test_feeds)
     if reddit.health_check():
         adapters.append(reddit)
     return adapters

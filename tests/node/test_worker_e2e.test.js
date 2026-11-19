@@ -37,12 +37,12 @@ test('E2E: Express + real Python worker + local RSS HTTP feed -> SQLite + SSE st
   const seedPath   = path.join(dir, '.worker_seed.json');
 
   const prevKey  = process.env.SONARS_ACCESS_KEY;
-  const prevHttp = process.env.SONARS_ALLOW_HTTP_FEEDS;
+  const prevTest = process.env.SONARS_TEST_ALLOW_LOCAL_HTTP;
   const prevEnv  = process.env.NODE_ENV;
 
   process.env.NODE_ENV = 'test';
   process.env.SONARS_ACCESS_KEY = 'e2e-operator-key';
-  process.env.SONARS_ALLOW_HTTP_FEEDS = '1';
+  process.env.SONARS_TEST_ALLOW_LOCAL_HTTP = '1';
 
   // Local mock RSS server
   const rssServer = http.createServer((_req, res) => {
@@ -56,6 +56,7 @@ test('E2E: Express + real Python worker + local RSS HTTP feed -> SQLite + SSE st
     configPath,
     seedPath,
     workerManager: wm,
+    allowTestFeeds: true,
   });
   const appServer = http.createServer(app);
   const appPort   = await listen(appServer);
@@ -63,19 +64,24 @@ test('E2E: Express + real Python worker + local RSS HTTP feed -> SQLite + SSE st
 
   let sseReq = null;
   try {
-    // Login
+    // Login and capture CSRF token
     const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessKey: 'e2e-operator-key' }),
     });
     assert.equal(loginRes.status, 200);
+    const { csrfToken } = await loginRes.json();
     const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
 
-    // Save config pointing to local RSS feed
+    // Save config pointing to local test RSS feed
     const cfgRes = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookie,
+        'X-CSRF-Token': csrfToken,
+      },
       body: JSON.stringify({
         interval: 30,
         feeds: [`http://127.0.0.1:${rssPort}/r/forhire/.rss`],
@@ -110,7 +116,7 @@ test('E2E: Express + real Python worker + local RSS HTTP feed -> SQLite + SSE st
     // Start real Python worker subprocess
     const startRes = await fetch(`${baseUrl}/api/start`, {
       method: 'POST',
-      headers: { Cookie: cookie },
+      headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken },
     });
     assert.equal(startRes.status, 200);
     const startJson = await startRes.json();
@@ -135,24 +141,23 @@ test('E2E: Express + real Python worker + local RSS HTTP feed -> SQLite + SSE st
     // Stop worker cleanly
     const stopRes = await fetch(`${baseUrl}/api/stop`, {
       method: 'POST',
-      headers: { Cookie: cookie },
+      headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken },
     });
     assert.equal(stopRes.status, 200);
 
-    // Wait briefly for SIGTERM exit
     for (let i = 0; i < 30 && wm.isRunning(); i++) {
       await new Promise(r => setTimeout(r, 100));
     }
     assert.equal(wm.isRunning(), false);
   } finally {
     if (sseReq) sseReq.destroy();
-    wm.stopWorker();
+    await wm.stopWorkerAsync(3000);
     appServer.close();
     rssServer.close();
     db.closeDb(dbPath);
     fs.rmSync(dir, { recursive: true, force: true });
     if (prevKey === undefined) delete process.env.SONARS_ACCESS_KEY; else process.env.SONARS_ACCESS_KEY = prevKey;
-    if (prevHttp === undefined) delete process.env.SONARS_ALLOW_HTTP_FEEDS; else process.env.SONARS_ALLOW_HTTP_FEEDS = prevHttp;
+    if (prevTest === undefined) delete process.env.SONARS_TEST_ALLOW_LOCAL_HTTP; else process.env.SONARS_TEST_ALLOW_LOCAL_HTTP = prevTest;
     if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
   }
 });

@@ -14,18 +14,17 @@ import calendar
 import email.utils
 import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable, Optional
 
 try:
     import feedparser  # type: ignore
 except ImportError:  # pragma: no cover
     feedparser = None
 
+from ..net_guard import SSRFBlockedError, safe_fetch_bytes
 from .base import CanonicalSignal, SourceAdapter
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
@@ -132,8 +131,17 @@ def _parse_xml_fallback(xml_bytes: bytes) -> list[dict[str, Any]]:
 class RedditAdapter(SourceAdapter):
     USER_AGENT = "SONARS-RedditAdapter/1.0 (+https://devign.digital)"
 
-    def __init__(self, config: dict[str, Any], log_fn=None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        log_fn=None,
+        *,
+        allow_local_test_feeds: bool = False,
+        resolver: Optional[Callable[[str, int], list[str]]] = None,
+    ) -> None:
         super().__init__(config, log_fn=log_fn)
+        self._allow_local_test_feeds = bool(allow_local_test_feeds)
+        self._resolver = resolver
         self._etag_cache: dict[str, dict[str, str]] = {}
         self._backoff_until: dict[str, float] = {}
         self._backoff_seconds: dict[str, int] = {}
@@ -171,37 +179,44 @@ class RedditAdapter(SourceAdapter):
         if cache.get("modified"):
             headers["If-Modified-Since"] = cache["modified"]
 
-        if feedparser is not None:
-            feed = feedparser.parse(url, request_headers=headers)
-            status = int(getattr(feed, "status", 200) or 200)
-            resp_headers = getattr(feed, "headers", {}) or {}
-            if getattr(feed, "etag", None):
-                self._etag_cache.setdefault(url, {})["etag"] = feed.etag
-            if getattr(feed, "modified", None):
-                self._etag_cache.setdefault(url, {})["modified"] = feed.modified
+        resp = safe_fetch_bytes(
+            url,
+            headers=headers,
+            timeout=15.0,
+            allow_private_for_test=self._allow_local_test_feeds,
+            resolver=self._resolver,
+        )
+        status = int(resp.get("status", 200))
+        resp_headers = resp.get("headers", {})
+        etag = resp_headers.get("etag")
+        modified = resp_headers.get("last-modified")
+        if etag:
+            self._etag_cache.setdefault(url, {})["etag"] = etag
+        if modified:
+            self._etag_cache.setdefault(url, {})["modified"] = modified
+
+        if status == 304:
+            return {"status": 304, "entries": [], "retry_after": None}
+
+        if status >= 400:
             return {
                 "status": status,
-                "entries": list(getattr(feed, "entries", []) or []),
-                "retry_after": resp_headers.get("retry-after") or resp_headers.get("Retry-After"),
+                "entries": [],
+                "retry_after": resp_headers.get("retry-after"),
             }
 
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                status = int(getattr(resp, "status", 200) or 200)
-                etag = resp.headers.get("ETag")
-                modified = resp.headers.get("Last-Modified")
-                if etag:
-                    self._etag_cache.setdefault(url, {})["etag"] = etag
-                if modified:
-                    self._etag_cache.setdefault(url, {})["modified"] = modified
-                raw = resp.read()
-                return {"status": status, "entries": _parse_xml_fallback(raw), "retry_after": None}
-        except urllib.error.HTTPError as err:
-            retry_after = err.headers.get("Retry-After") if err.headers else None
-            if err.code == 304:
-                return {"status": 304, "entries": [], "retry_after": None}
-            return {"status": int(err.code), "entries": [], "retry_after": retry_after}
+        raw = resp.get("body", b"")
+        if feedparser is not None:
+            parsed = feedparser.parse(raw)
+            entries = list(getattr(parsed, "entries", []) or [])
+        else:
+            entries = _parse_xml_fallback(raw)
+
+        return {
+            "status": status,
+            "entries": entries,
+            "retry_after": resp_headers.get("retry-after"),
+        }
 
     def scan_feed(
         self, url: str, keywords: list[str], seen_ids: set[str]
@@ -219,6 +234,9 @@ class RedditAdapter(SourceAdapter):
 
         try:
             feed = self.fetch_feed(url)
+        except SSRFBlockedError as exc:
+            self.log("WARN", f"Feed blocked by SSRF guard r/{sub}: {exc}")
+            return [], 0, 0, 1
         except Exception as exc:
             self.log("ERROR", f"Feed unavailable r/{sub}: {exc}")
             return [], 0, 0, 1

@@ -6,22 +6,26 @@
 const API = window.API_BASE || '/api';
 
 let onUnauthorized = null;
+let csrfToken      = null;
 
 export function setUnauthorizedHandler(fn) {
   onUnauthorized = fn;
 }
 
 async function request(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
   const res = await fetch(API + path, {
     credentials: 'same-origin',
     ...options,
     headers: {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(csrfToken && method !== 'GET' && method !== 'HEAD' ? { 'X-CSRF-Token': csrfToken } : {}),
       ...(options.headers || {}),
     },
   });
 
   if (res.status === 401 && path !== '/auth/login' && typeof onUnauthorized === 'function') {
+    csrfToken = null;
     onUnauthorized();
   }
 
@@ -43,19 +47,27 @@ async function request(path, options = {}) {
   return data;
 }
 
-export function getSession() {
-  return request('/auth/session');
+export async function getSession() {
+  const data = await request('/auth/session');
+  csrfToken = data && data.csrfToken ? data.csrfToken : null;
+  return data;
 }
 
-export function login(accessKey) {
-  return request('/auth/login', {
+export async function login(accessKey) {
+  const data = await request('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ accessKey }),
   });
+  csrfToken = data && data.csrfToken ? data.csrfToken : null;
+  return data;
 }
 
-export function logout() {
-  return request('/auth/logout', { method: 'POST' });
+export async function logout() {
+  try {
+    return await request('/auth/logout', { method: 'POST' });
+  } finally {
+    csrfToken = null;
+  }
 }
 
 export function getStatus() {

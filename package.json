@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "PORT=3000 node server.js",
     "start": "node server.js",
-    "build": "node --check server.js routes/monitor.js routes/signals.js routes/health.js lib/db.js lib/worker-manager.js lib/security.js lib/config.js",
-    "lint": "node --check server.js routes/monitor.js routes/signals.js routes/health.js lib/db.js lib/worker-manager.js lib/security.js lib/config.js frontend/app.js frontend/api.js frontend/components/signals-view.js frontend/components/dossier-modal.js frontend/components/config-view.js && python3 -m py_compile worker/worker.py worker/scoring.py worker/adapters/base.py worker/adapters/reddit.py",
+    "build": "node scripts/validate-js.js",
+    "lint": "node scripts/validate-js.js && python3 -c \"import pathlib, py_compile, sys; files = [p for p in sorted(pathlib.Path('.').rglob('*.py')) if not any(x in p.parts for x in ('node_modules','.git','data','logs','dist','__pycache__'))]; [py_compile.compile(str(f), doraise=True) for f in files]; print(f'Validated {len(files)} Python file(s) individually.')\"",
     "test": "node --test tests/node/*.test.js && python3 -m unittest discover -s tests/python -p 'test_*.py'"
   },
   "dependencies": {

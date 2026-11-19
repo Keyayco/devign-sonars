@@ -76,6 +76,15 @@ class RedditAdapterTests(unittest.TestCase):
 
         try:
             logs = []
+            # Default adapter must block localhost/HTTP feeds
+            strict_adapter = RedditAdapter(
+                {"interval": 60, "feeds": [f"http://127.0.0.1:{port}/r/forhire/.rss"], "keywords": ["need"]},
+                log_fn=lambda lvl, msg: logs.append((lvl, msg)),
+            )
+            strict_sigs, strict_metrics = strict_adapter.poll(set())
+            self.assertEqual(len(strict_sigs), 0)
+            self.assertEqual(strict_metrics["errors"], 1)
+
             adapter = RedditAdapter(
                 {
                     "interval": 60,
@@ -87,6 +96,7 @@ class RedditAdapterTests(unittest.TestCase):
                     "keywords": ["need a website", "hire a developer"],
                 },
                 log_fn=lambda lvl, msg: logs.append((lvl, msg)),
+                allow_local_test_feeds=True,
             )
             seen = set()
 

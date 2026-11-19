@@ -4,7 +4,7 @@
  * routes/signals.js — SONARS Signals / Leads API
  * ───────────────────────────────────────────────
  * Mounted at BASE/api/signals and BASE/api/leads.
- * Protected by operator authentication middleware.
+ * Protected by operator authentication & CSRF validation.
  */
 
 const { Router } = require('express');
@@ -21,6 +21,7 @@ function createSignalsRouter({ dbPath } = {}) {
   const router = Router();
 
   router.use(security.requireAuth);
+  router.use(security.verifyCsrf);
 
   router.get('/', (req, res) => {
     const { intent, source, opportunity, status, q, sort, limit } = req.query;

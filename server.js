@@ -27,6 +27,8 @@ function createApp({
   configPath,
   seedPath,
   workerManager = wm,
+  feedLookup,
+  allowTestFeeds = false,
 } = {}) {
   const app  = express();
   const BASE = String(basePath || '').replace(/\/+$/, '');
@@ -67,7 +69,7 @@ function createApp({
   // Authenticated Signal & Monitor APIs
   app.use(BASE + '/api/signals', createSignalsRouter({ dbPath }));
   app.use(BASE + '/api/leads',   createSignalsRouter({ dbPath }));
-  app.use(BASE + '/api',         createMonitorRouter({ configPath, seedPath, dbPath, workerManager }));
+  app.use(BASE + '/api',         createMonitorRouter({ configPath, seedPath, dbPath, workerManager, feedLookup, allowTestFeeds }));
 
   // Serve static Vanilla frontend shell (no secrets or data embedded)
   function serveDashboard(_req, res) {
@@ -125,9 +127,9 @@ if (require.main === module) {
     process.exit(1);
   });
 
-  const shutdown = (sig) => {
+  const shutdown = async (sig) => {
     console.log(`[SERVER] Received ${sig} — shutting down gracefully`);
-    wm.stopWorker();
+    await wm.stopWorkerAsync(5000);
     server.close(() => {
       db.closeDb();
       process.exit(0);

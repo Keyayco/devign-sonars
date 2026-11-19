@@ -4,6 +4,7 @@
  * routes/health.js — SONARS Health Check Routes
  * ─────────────────────────────────────────────
  * Unauthenticated endpoints for Render / Docker / load-balancer probes.
+ * Never leaks internal DB paths or stack details on failure.
  */
 
 const { Router } = require('express');
@@ -23,11 +24,11 @@ function createHealthRouter({ dbPath } = {}) {
         ts:     new Date().toISOString(),
       });
     } catch (err) {
+      console.error('[HEALTH] Database probe failed:', err && err.message);
       return res.status(503).json({
         ok:     false,
         system: 'SONARS',
-        db:     'error',
-        error:  err.message,
+        db:     'unavailable',
       });
     }
   }

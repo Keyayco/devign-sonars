@@ -267,7 +267,38 @@ test('discovery routes: auth/CSRF, source status, CIPC missing creds, OSM run pe
     assert.equal(revJson.signal.suppressed, 1);
     assert.equal(revJson.signal.contact_eligible, 0);
 
-    // 8. Discovery runs history records both failed CIPC and completed OSM runs
+    // 8. Verify buying_intent vs entity_discovery separation in /api/signals and /api/status
+    db.insertLead({
+      source_type: 'reddit',
+      source_entity_id: 'https://www.reddit.com/r/forhire/comments/999/test',
+      source_channel: 'r/forhire',
+      title: 'Hire a developer ASAP',
+      observation_type: 'buying_intent_signal',
+      intent_score: 84,
+      intent: 'high',
+      lead_value: 80,
+      fit_score: 80,
+      confidence_score: 85,
+      opportunity_type: 'active_buying_intent',
+    }, sb.dbPath);
+
+    const buyRes = await fetch(`${baseUrl}/api/signals?record_kind=buying_intent`, { headers: { Cookie: cookie } });
+    const buyJson = await buyRes.json();
+    assert.equal(buyJson.total, 1);
+    assert.equal(buyJson.signals[0].source_type, 'reddit');
+
+    const discRes = await fetch(`${baseUrl}/api/signals?record_kind=entity_discovery`, { headers: { Cookie: cookie } });
+    const discJson = await discRes.json();
+    assert.equal(discJson.total, 3);
+    assert.ok(discJson.signals.every(s => s.source_type === 'osm' && s.intent_score === 0));
+
+    const statusRes = await fetch(`${baseUrl}/api/status`, { headers: { Cookie: cookie } });
+    const statusJson = await statusRes.json();
+    assert.equal(statusJson.db.buying_intent_total, 1);
+    assert.equal(statusJson.db.entity_discovery_total, 3);
+    assert.equal(statusJson.db.avg_score, 84);
+
+    // 9. Discovery runs history records both failed CIPC and completed OSM runs
     const runsRes = await fetch(`${baseUrl}/api/discovery/runs`, { headers: { Cookie: cookie } });
     const runsJson = await runsRes.json();
     assert.equal(runsJson.runs.length, 3);
@@ -278,5 +309,58 @@ test('discovery routes: auth/CSRF, source status, CIPC missing creds, OSM run pe
     fs.rmSync(sb.dir, { recursive: true, force: true });
     if (prevKey === undefined) delete process.env.SONARS_ACCESS_KEY; else process.env.SONARS_ACCESS_KEY = prevKey;
     if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+  }
+});
+
+test('discovery routes redact accidental credentials in error responses and persisted run logs', async () => {
+  const sb = makeSandbox();
+  const prevKey = process.env.SONARS_ACCESS_KEY;
+  process.env.SONARS_ACCESS_KEY = 'redact-test-key';
+  security.clearLoginAttemptsForTest();
+
+  const leakingRunner = async () => ({
+    ok: false,
+    status_code: 502,
+    error: 'Upstream failed CIPC_CLIENT_SECRET=super-secret-xyz Bearer tok_abc123',
+  });
+
+  const app = createApp({
+    dbPath: sb.dbPath,
+    configPath: sb.configPath,
+    seedPath: sb.seedPath,
+    workerManager: { isRunning: () => false, getStats: () => ({}), getLogs: () => [], addSSEClient: r => r.end() },
+    runDiscovery: leakingRunner,
+  });
+
+  const { server, baseUrl } = await listen(app);
+  try {
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessKey: 'redact-test-key' }),
+    });
+    const { csrfToken } = await loginRes.json();
+    const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+
+    const res = await fetch(`${baseUrl}/api/discovery/cipc/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ query: 'TestCo' }),
+    });
+    assert.equal(res.status, 502);
+    const bodyText = await res.text();
+    assert.ok(!bodyText.includes('super-secret-xyz'));
+    assert.ok(!bodyText.includes('tok_abc123'));
+
+    const runs = db.getDiscoveryRuns(5, sb.dbPath);
+    assert.equal(runs.length, 1);
+    assert.ok(!runs[0].error_message.includes('super-secret-xyz'));
+    assert.ok(!runs[0].error_message.includes('tok_abc123'));
+  } finally {
+    security.clearLoginAttemptsForTest();
+    server.close();
+    db.closeDb(sb.dbPath);
+    fs.rmSync(sb.dir, { recursive: true, force: true });
+    if (prevKey === undefined) delete process.env.SONARS_ACCESS_KEY; else process.env.SONARS_ACCESS_KEY = prevKey;
   }
 });

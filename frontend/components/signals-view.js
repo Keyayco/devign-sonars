@@ -69,6 +69,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     limit:            25,
     offset:           0,
     q:                '',
+    record_kind:      'buying_intent',
     intent:           'all',
     source:           'all',
     observation_type: 'all',
@@ -85,13 +86,11 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     </div>
     <div class="signal-toolbar">
       <div class="toolbar-row">
-        <input
-          type="search"
-          id="sig-search"
-          class="search-input"
-          placeholder="Search title, company, region, category, keyword..."
-          aria-label="Search signals"
-        />
+        <div class="seg-group" role="group" aria-label="Classification filter">
+          <button type="button" class="seg-btn active" data-kind="buying_intent">Buying Intent Signals</button>
+          <button type="button" class="seg-btn" data-kind="entity_discovery">Entity Discovery</button>
+          <button type="button" class="seg-btn" data-kind="all">All Records</button>
+        </div>
         <div class="seg-group" role="group" aria-label="Intent filter">
           <button type="button" class="seg-btn active" data-intent="all">All</button>
           <button type="button" class="seg-btn" data-intent="high">High</button>
@@ -100,6 +99,13 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
         </div>
       </div>
       <div class="toolbar-row">
+        <input
+          type="search"
+          id="sig-search"
+          class="search-input"
+          placeholder="Search title, company, region, category, keyword..."
+          aria-label="Search signals"
+        />
         <div class="filter-controls">
           <select id="sig-source-filter" class="select-sm" aria-label="Filter by source">
             <option value="all">Source: All</option>
@@ -142,6 +148,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
           <select id="sig-sort" class="select-sm" aria-label="Sort signals">
             <option value="created_at">Sort: Newest</option>
             <option value="score">Sort: Intent Score</option>
+            <option value="fit">Sort: Fit Score</option>
             <option value="value">Sort: Lead Value</option>
             <option value="confidence">Sort: Confidence</option>
             <option value="composite">Sort: Composite</option>
@@ -186,9 +193,17 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
   const nextBtn      = rootEl.querySelector('#sig-next-page');
   const pageInfoEl   = rootEl.querySelector('#sig-page-info');
 
+  function setRecordKind(nextKind) {
+    state.record_kind = nextKind || 'buying_intent';
+    rootEl.querySelectorAll('[data-kind]').forEach(b =>
+      b.classList.toggle('active', b.dataset.kind === state.record_kind)
+    );
+  }
+
   function currentQueryParams() {
     return {
       q:                state.q,
+      record_kind:      state.record_kind,
       intent:           state.intent,
       source:           state.source,
       observation_type: state.observation_type,
@@ -213,6 +228,13 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     searchTimer = setTimeout(() => triggerQuery(true), 220);
   });
 
+  rootEl.querySelectorAll('[data-kind]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setRecordKind(btn.dataset.kind);
+      triggerQuery(true);
+    });
+  });
+
   rootEl.querySelectorAll('[data-intent]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.intent = btn.dataset.intent;
@@ -223,8 +245,22 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     });
   });
 
-  sourceEl.addEventListener('change', () => { state.source = sourceEl.value; triggerQuery(true); });
-  obsEl.addEventListener('change', () => { state.observation_type = obsEl.value; triggerQuery(true); });
+  sourceEl.addEventListener('change', () => {
+    state.source = sourceEl.value;
+    if ((state.source === 'cipc' || state.source === 'osm') && state.record_kind === 'buying_intent') {
+      setRecordKind('entity_discovery');
+    } else if (state.source === 'reddit' && state.record_kind === 'entity_discovery') {
+      setRecordKind('buying_intent');
+    }
+    triggerQuery(true);
+  });
+  obsEl.addEventListener('change', () => {
+    state.observation_type = obsEl.value;
+    if (state.observation_type !== 'all') {
+      setRecordKind(state.observation_type === 'buying_intent_signal' ? 'buying_intent' : 'entity_discovery');
+    }
+    triggerQuery(true);
+  });
   reviewEl.addEventListener('change', () => { state.review_status = reviewEl.value; triggerQuery(true); });
   statusEl.addEventListener('change', () => { state.status = statusEl.value; triggerQuery(true); });
   oppEl.addEventListener('change', () => { state.opportunity = oppEl.value; triggerQuery(true); });
@@ -274,6 +310,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     const oppLabel = OPP_LABELS[opp] || opp;
     const obs = s.observation_type || 'buying_intent_signal';
     const obsLabel = OBS_LABELS[obs] || obs;
+    const isDiscovery = s.record_kind === 'entity_discovery' || obs !== 'buying_intent_signal';
     const rev = s.suppressed ? 'suppressed' : (s.review_status || 'pending_review');
     const revLabel = REVIEW_LABELS[rev] || rev;
     const srcType = s.source_type || 'reddit';
@@ -283,17 +320,17 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
       <tr class="${s.suppressed ? 'row-suppressed' : ''}">
         <td>
           <div class="score-stack">
-            <div class="score-row">
+            <div class="score-row" title="Buying Intent (0–100)">
               <span class="score-lbl">INT</span>
               <div class="score-bar"><div class="score-fill ${esc(s.intent)}" style="width:${intentScore}%"></div></div>
-              <span>${intentScore}</span>
+              <span>${intentScore}${isDiscovery ? '<span class="score-note">none</span>' : ''}</span>
             </div>
-            <div class="score-row">
-              <span class="score-lbl">VAL</span>
+            <div class="score-row" title="${isDiscovery ? 'Directory / Presence Fit (not buying intent)' : 'Commercial Fit / Lead Value'}">
+              <span class="score-lbl">FIT</span>
               <div class="score-bar"><div class="score-fill fit" style="width:${fitScore}%"></div></div>
               <span>${fitScore}</span>
             </div>
-            <div class="score-row">
+            <div class="score-row" title="Evidence Confidence (0–100)">
               <span class="score-lbl">CNF</span>
               <div class="score-bar"><div class="score-fill conf" style="width:${confScore}%"></div></div>
               <span>${confScore}</span>
@@ -304,6 +341,7 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
           <div class="source-meta">
             <span class="obs-tag">${esc(obsLabel)}</span>
             <span class="opp-tag opp-${esc(opp)}">${esc(oppLabel)}</span>
+            ${isDiscovery ? '<span class="disc-only-tag">Discovery · Not Intent</span>' : ''}
           </div>
         </td>
         <td>
@@ -371,6 +409,10 @@ export function createSignalsView(rootEl, { onInspect, onStatusChange, onCopyUrl
     getQueryParams: currentQueryParams,
     prependSignal(sig) {
       if (!sig || state.offset > 0 || state.signals.some(s => s.id === sig.id)) return false;
+      const sigKind = (sig.observation_type || 'buying_intent_signal') === 'buying_intent_signal'
+        ? 'buying_intent'
+        : 'entity_discovery';
+      if (state.record_kind !== 'all' && sigKind !== state.record_kind) return false;
       state.signals.unshift(sig);
       if (state.signals.length > state.limit) state.signals.pop();
       state.total += 1;

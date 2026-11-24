@@ -51,6 +51,7 @@ def _serialize_signal(sig, ev: dict[str, Any]) -> dict[str, Any]:
         "fit_score": ev["fit_score"],
         "confidence_score": ev["confidence_score"],
         "opportunity_type": ev["opportunity_type"],
+        "record_kind": ev.get("record_kind", "entity_discovery"),
         "score_breakdown": ev["score_breakdown"],
     }
 

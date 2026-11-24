@@ -324,7 +324,7 @@ button {
 
 @media (min-width: 900px) {
   .stats-grid {
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(8, 1fr);
   }
 }
 
@@ -1136,3 +1136,81 @@ input:focus, select:focus, textarea:focus {
   gap: 12px;
   flex-wrap: wrap;
 }
+
+.score-note {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-left: 2px;
+}
+
+.disc-only-tag {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+
+.provider-box {
+  padding: 9px 11px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-url {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--info);
+  word-break: break-all;
+}
+
+.disc-score-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
+}
+
+.dossier-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.dossier-metric-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dossier-metric-lbl {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.dossier-metric-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.dossier-metric-sub {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+

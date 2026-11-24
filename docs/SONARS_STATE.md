@@ -30,14 +30,21 @@
   - `SONARS_ACCESS_KEY` operator authentication with HMAC-SHA256 signed `HttpOnly; SameSite=Lax` cookies (`sonars_session`) + `Authorization: Bearer` support.
   - Fails closed (`503`) in `NODE_ENV=production` if `SONARS_ACCESS_KEY` is missing.
   - Login brute-force rate limiting (10 attempts / 15m per IP), strict JSON payload validation, `100kb` body size cap, SSRF feed URL validation (`https://` required by default), and secret redaction across logs and config endpoints.
+- **Multi-Source Discovery (`worker/adapters/osm.py`, `worker/adapters/cipc.py`, `routes/discovery.js`)**:
+  - OpenStreetMap Overpass adapter with 18 South African geographic presets (12 Gauteng / East Rand + 6 national metro nodes), ODbL attribution, throttling, TTL caching, 429 cooldowns, and configurable `OSM_OVERPASS_URL` provider visibility in the UI.
+  - Official CIPC APIVerse OAuth 2.0 adapter (`client_credentials`), disabled by default until live portal credentials/endpoints from `https://developer.cipc.co.za/` are supplied server-side.
+- **Discovery vs. Qualification Separation & POPIA (`lib/db.js`, `worker/scoring.py`)**:
+  - `buying_intent` signals (`buying_intent_signal`) are separated in API filters, Overview KPIs, Signal Feed, Source Discovery, and Dossier metrics from `entity_discovery` records (`intent_score = 0`, `lead_value = 0`, explicit `fit_score`).
+  - `contact_eligible = 0` by default; explicit human approval required; `suppression_list` prevents re-ingestion even across retention purges; `approved` and `contacted`/`won` records are preserved by `purgeExpiredRecords()`.
 - **Automated Test Coverage (`tests/`)**:
-  - Python unit/HTTP tests for scoring parity, URL normalization, ETag/304, HTTP 429 backoff, and unavailable feed isolation.
-  - Node integration & E2E tests for SQLite persistence/migrations, authentication & validation rules, live Python worker execution over local RSS HTTP feeds, SSE streaming, and clean `SIGTERM` shutdown.
+  - Python unit/HTTP tests for scoring parity, discovery vs intent separation, all 18 OSM geographic presets, Overpass timeouts/429/malformed responses/caching, CIPC OAuth/429/redaction, URL normalization, ETag/304, and SSRF protection.
+  - Node integration & E2E tests for SQLite persistence/v1–v3 migrations, POPIA review/suppression/retention, authentication/CSRF & validation rules, discovery routes, live Python worker execution over local RSS HTTP feeds, SSE streaming, and clean `SIGTERM` shutdown.
 
 ---
 
 ## 3. Intentionally Deferred Scope
 
-The following roadmap capabilities remain intentionally unimplemented in this release (no fabricated APIs or credentials):
-- **CIPC Registry Adapter**: Pending formal APIVerse registration and compliance review.
-- **Devign Lead Forge CRM Bridge**: Pending Lead Forge production endpoint specification and operator export workflow.
+The following roadmap capabilities remain intentionally unimplemented or inactive until external dependencies are completed (no fabricated APIs or credentials):
+- **Live CIPC APIVerse Connectivity**: Adapter is implemented and unit-tested offline; live execution requires completing portal registration/subscription at `https://developer.cipc.co.za/` and configuring `CIPC_ENABLED=true`, `CIPC_CLIENT_ID`, `CIPC_CLIENT_SECRET`, `CIPC_TOKEN_URL`, `CIPC_API_BASE_URL`, `CIPC_SEARCH_PATH`, and any portal-specified `CIPC_SCOPE` / `CIPC_COMPANY_PATH`.
+- **Dedicated Production OSM Provider**: For sustained/high-volume production workloads, replace the shared public Overpass default with a self-hosted/commercial Overpass endpoint (`OSM_OVERPASS_URL`) or Geofabrik South Africa `.osm.pbf` batch ingestion.
+- **Devign Lead Forge CRM Bridge**: Pending Lead Forge production endpoint specification and human-approved export workflow.

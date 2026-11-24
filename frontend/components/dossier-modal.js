@@ -125,27 +125,45 @@ export function createDossierModal(backdropEl, { onStatusChange, onReviewChange,
     const oppLabel = OPP_LABELS[opp] || opp;
     const obs      = signal.observation_type || 'buying_intent_signal';
     const obsLabel = OBS_LABELS[obs] || obs;
+    const isDiscovery = signal.record_kind === 'entity_discovery' || obs !== 'buying_intent_signal';
     const rev      = signal.suppressed ? 'suppressed' : (signal.review_status || 'pending_review');
     const revLabel = REVIEW_LABELS[rev] || rev;
     const bd       = parseBreakdown(signal);
     const srcType  = (signal.source_type || 'reddit').toUpperCase();
     const srcChan  = signal.source_channel || signal.subreddit || '';
     const entity   = signal.entity_name ? ` · ${signal.entity_name}` : '';
-    const valueFactors = (bd && (bd.value_factors || bd.fit_factors)) || [];
+    const fitFactors = (bd && (bd.fit_factors || bd.value_factors)) || [];
     const attribution = signal.attribution || (bd && bd.attribution) || 'Internal collection';
     const canApproveContact = rev === 'approved' && !signal.suppressed && !signal.is_personal_info;
+    const discoveryNotice = isDiscovery
+      ? (obs === 'digital_presence_gap'
+        ? 'No website tag was observed in OpenStreetMap. This represents a possible digital-presence gap only — NOT confirmed buying demand. Verify independently before outreach.'
+        : 'Directory/registry discovery record verifies business existence only and does NOT represent buying intent.')
+      : '';
 
     kickerEl.textContent = `${srcType} · ${srcChan}${entity} · ${obsLabel} · ${oppLabel}`;
     titleEl.textContent  = signal.title || 'Untitled Signal';
 
     bodyEl.innerHTML = `
       <div class="dossier-section">
-        <div class="dossier-lbl">Qualification &amp; Prospecting Recommendation</div>
-        <div class="dossier-metrics">
-          <div>Buying Intent: <strong>${intentScore}/100</strong> (${esc(signal.intent)})</div>
-          <div>Commercial Fit: <strong>${fitScore}/100</strong></div>
-          <div>Confidence: <strong>${confScore}/100</strong></div>
-          <div>Observation: <strong>${esc(obsLabel)}</strong></div>
+        <div class="dossier-lbl">${isDiscovery ? 'Entity Discovery Assessment (Separated from Buying Intent)' : 'Qualification &amp; Prospecting Recommendation'}</div>
+        ${discoveryNotice ? `<div class="notice-banner">${esc(discoveryNotice)}</div>` : ''}
+        <div class="dossier-metrics-grid">
+          <div class="dossier-metric-box">
+            <div class="dossier-metric-lbl">Buying Intent</div>
+            <div class="dossier-metric-val">${intentScore}/100</div>
+            <div class="dossier-metric-sub">${isDiscovery ? 'Discovery Only · Not Buying Intent' : `Tier: ${esc(signal.intent || 'low')}`}</div>
+          </div>
+          <div class="dossier-metric-box">
+            <div class="dossier-metric-lbl">${isDiscovery ? 'Presence / Entity Fit' : 'Commercial Fit'}</div>
+            <div class="dossier-metric-val">${fitScore}/100</div>
+            <div class="dossier-metric-sub">${isDiscovery ? 'Directory attributes (not demand)' : 'Lead value estimate'}</div>
+          </div>
+          <div class="dossier-metric-box">
+            <div class="dossier-metric-lbl">Data Confidence</div>
+            <div class="dossier-metric-val">${confScore}/100</div>
+            <div class="dossier-metric-sub">Observation: ${esc(obsLabel)}</div>
+          </div>
         </div>
         ${bd && bd.recommended_action
           ? `<div class="dossier-action"><strong>Recommended Action:</strong> ${esc(bd.recommended_action)}</div>`
@@ -205,8 +223,8 @@ export function createDossierModal(backdropEl, { onStatusChange, onReviewChange,
       </div>
 
       <div class="dossier-section">
-        <div class="dossier-lbl">Commercial Fit / Lead Value Factors</div>
-        ${renderFactorList(valueFactors)}
+        <div class="dossier-lbl">${isDiscovery ? 'Directory / Presence Fit Factors (Not Buying Intent)' : 'Commercial Fit / Lead Value Factors'}</div>
+        ${renderFactorList(fitFactors)}
       </div>
 
       <div class="dossier-section">

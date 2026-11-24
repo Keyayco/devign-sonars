@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import time
 import urllib.parse
 from typing import Any, Callable, Optional
@@ -32,35 +33,118 @@ DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OSM_ATTRIBUTION = "© OpenStreetMap contributors (ODbL: https://opendatacommons.org/licenses/odbl/)"
 OSM_ODBL_URL = "https://opendatacommons.org/licenses/odbl/"
 
-# Curated compact bounding boxes [south, west, north, east] within safe <= 0.25 deg span
+# Curated compact bounding boxes [south, west, north, east] within safe <= 0.35 deg span.
+# Gauteng / East Rand presets are derived from Nominatim/OSM town-center and urban bounds,
+# clamped to commercial core extents where municipal boundaries exceed 0.35 deg.
 GEOGRAPHIC_AREAS: dict[str, dict[str, Any]] = {
-    "cape_town_cbd": {
-        "label": "Cape Town CBD & Atlantic Seaboard, WC",
-        "bbox": [-33.955, 18.375, -33.895, 18.465],
-        "region": "Cape Town, Western Cape",
+    # ── Gauteng — East Rand (Ekurhuleni) ──────────────────────────────────────
+    "benoni": {
+        "label": "Benoni, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.245, 28.265, -26.135, 28.385],
+        "region": "Benoni, Gauteng",
+    },
+    "boksburg": {
+        "label": "Boksburg, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.265, 28.210, -26.165, 28.310],
+        "region": "Boksburg, Gauteng",
+    },
+    "kempton_park": {
+        "label": "Kempton Park, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.155, 28.180, -26.050, 28.285],
+        "region": "Kempton Park, Gauteng",
+    },
+    "germiston": {
+        "label": "Germiston, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.270, 28.115, -26.165, 28.220],
+        "region": "Germiston, Gauteng",
+    },
+    "alberton": {
+        "label": "Alberton, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.340, 28.070, -26.230, 28.180],
+        "region": "Alberton, Gauteng",
+    },
+    "brakpan": {
+        "label": "Brakpan, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.300, 28.310, -26.180, 28.430],
+        "region": "Brakpan, Gauteng",
+    },
+    "springs": {
+        "label": "Springs, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.300, 28.380, -26.180, 28.490],
+        "region": "Springs, Gauteng",
+    },
+    "edenvale": {
+        "label": "Edenvale, East Rand, GP",
+        "group": "Gauteng — East Rand",
+        "bbox": [-26.150, 28.110, -26.070, 28.190],
+        "region": "Edenvale, Gauteng",
+    },
+    # ── Gauteng — Johannesburg & Pretoria Metro Nodes ─────────────────────────
+    "johannesburg": {
+        "label": "Johannesburg Central & Inner Metro, GP",
+        "group": "Gauteng — Metro & Corridors",
+        "bbox": [-26.265, 27.975, -26.145, 28.115],
+        "region": "Johannesburg, Gauteng",
+    },
+    "sandton": {
+        "label": "Sandton Commercial Node, GP",
+        "group": "Gauteng — Metro & Corridors",
+        "bbox": [-26.155, 27.995, -26.025, 28.145],
+        "region": "Sandton, Gauteng",
     },
     "sandton_jhb": {
         "label": "Sandton & Rosebank, Johannesburg, GP",
+        "group": "Gauteng — Metro & Corridors",
         "bbox": [-26.165, 28.010, -26.075, 28.095],
         "region": "Johannesburg, Gauteng",
     },
+    "midrand": {
+        "label": "Midrand Business Corridor, GP",
+        "group": "Gauteng — Metro & Corridors",
+        "bbox": [-26.042, 28.051, -25.921, 28.215],
+        "region": "Midrand, Gauteng",
+    },
+    "pretoria": {
+        "label": "Pretoria Central & Arcadia, GP",
+        "group": "Gauteng — Metro & Corridors",
+        "bbox": [-25.810, 28.120, -25.690, 28.250],
+        "region": "Pretoria, Gauteng",
+    },
     "pretoria_east": {
         "label": "Pretoria CBD & Menlyn, GP",
+        "group": "Gauteng — Metro & Corridors",
         "bbox": [-25.815, 28.180, -25.735, 28.295],
         "region": "Pretoria, Gauteng",
     },
-    "durban_umhlanga": {
-        "label": "Durban North & Umhlanga, KZN",
-        "bbox": [-29.820, 31.020, -29.705, 31.110],
-        "region": "Durban, KwaZulu-Natal",
+    # ── Other South African Metros (Retained) ─────────────────────────────────
+    "cape_town_cbd": {
+        "label": "Cape Town CBD & Atlantic Seaboard, WC",
+        "group": "Western Cape, KZN & Eastern Cape",
+        "bbox": [-33.955, 18.375, -33.895, 18.465],
+        "region": "Cape Town, Western Cape",
     },
     "stellenbosch": {
         "label": "Stellenbosch Central, WC",
+        "group": "Western Cape, KZN & Eastern Cape",
         "bbox": [-33.960, 18.830, -33.905, 18.895],
         "region": "Stellenbosch, Western Cape",
     },
+    "durban_umhlanga": {
+        "label": "Durban North & Umhlanga, KZN",
+        "group": "Western Cape, KZN & Eastern Cape",
+        "bbox": [-29.820, 31.020, -29.705, 31.110],
+        "region": "Durban, KwaZulu-Natal",
+    },
     "gqeberha": {
         "label": "Gqeberha (Port Elizabeth) Central, EC",
+        "group": "Western Cape, KZN & Eastern Cape",
         "bbox": [-34.000, 25.560, -33.930, 25.650],
         "region": "Gqeberha, Eastern Cape",
     },
@@ -191,22 +275,47 @@ class OsmDiscoveryAdapter(SourceAdapter):
         raw = self._env.get("OSM_OVERPASS_URL") or self.config.get("osm_overpass_url") or DEFAULT_OVERPASS_URL
         return str(raw).strip() or DEFAULT_OVERPASS_URL
 
+    @staticmethod
+    def _sanitize_endpoint_display(endpoint: str) -> str:
+        try:
+            parts = urllib.parse.urlsplit(endpoint)
+            if parts.username or parts.password:
+                netloc = parts.hostname or ""
+                if parts.port:
+                    netloc = f"{netloc}:{parts.port}"
+                return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+        except Exception:
+            pass
+        return endpoint
+
     def get_status(self) -> dict[str, Any]:
         endpoint = self._endpoint()
+        display_url = self._sanitize_endpoint_display(endpoint)
         is_default_public = endpoint.startswith("https://overpass-api.de")
+        now = self._time()
+        cooldown_remaining = max(0, int(self._cooldown_until - now) + 1) if now < self._cooldown_until else 0
         return {
             "source": "osm",
             "name": "OpenStreetMap Overpass Business Discovery",
-            "provider_url": endpoint,
+            "provider_url": display_url,
+            "provider_mode": "public_overpass" if is_default_public else "custom_overpass",
             "is_public_overpass": is_default_public,
             "enabled": True,
             "configured": True,
-            "ready": True,
+            "ready": cooldown_remaining == 0,
+            "cooldown_active": cooldown_remaining > 0,
+            "cooldown_remaining_sec": cooldown_remaining,
             "attribution": OSM_ATTRIBUTION,
             "license": "ODbL 1.0",
             "license_url": OSM_ODBL_URL,
             "areas": [
-                {"key": k, "label": v["label"], "region": v["region"], "bbox": v["bbox"]}
+                {
+                    "key": k,
+                    "label": v["label"],
+                    "group": v.get("group", "South Africa"),
+                    "region": v["region"],
+                    "bbox": v["bbox"],
+                }
                 for k, v in GEOGRAPHIC_AREAS.items()
             ],
             "categories": [
@@ -214,8 +323,8 @@ class OsmDiscoveryAdapter(SourceAdapter):
                 for k, v in BUSINESS_CATEGORIES.items()
             ],
             "rate_limit_notice": (
-                "Public Overpass instance is intended for controlled on-demand queries; "
-                "set OSM_OVERPASS_URL to a dedicated/commercial Overpass endpoint for heavy workloads."
+                "Shared public Overpass is suitable only for controlled, low-volume on-demand queries. "
+                "For sustained production workloads, configure OSM_OVERPASS_URL to a dedicated/commercial Overpass instance or ingest regional Geofabrik OSM PBF extracts."
             ),
         }
 
@@ -270,7 +379,7 @@ class OsmDiscoveryAdapter(SourceAdapter):
             )
         except SSRFBlockedError as exc:
             raise OsmDiscoveryError(f"Overpass endpoint blocked by SSRF guard: {exc}", status_code=400) from exc
-        except TimeoutError as exc:
+        except (TimeoutError, socket.timeout) as exc:
             raise OsmDiscoveryError("Overpass API request timed out", status_code=504) from exc
         except Exception as exc:
             raise OsmDiscoveryError(f"Overpass request failed: {exc}", status_code=502) from exc

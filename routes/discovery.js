@@ -123,7 +123,7 @@ function createDiscoveryRouter({
 
       if (!result || !result.ok) {
         const code = (result && result.status_code) || 503;
-        const msg = (result && result.error) || 'CIPC discovery failed';
+        const msg = security.redactSecrets((result && result.error) || 'CIPC discovery failed');
         db.recordDiscoveryRun({
           source_type: 'cipc',
           query_params: params,
@@ -168,7 +168,7 @@ function createDiscoveryRouter({
 
       if (!result || !result.ok) {
         const code = (result && result.status_code) || 502;
-        const msg = (result && result.error) || 'OSM discovery failed';
+        const msg = security.redactSecrets((result && result.error) || 'OSM discovery failed');
         db.recordDiscoveryRun({
           source_type: 'osm',
           query_params: params,

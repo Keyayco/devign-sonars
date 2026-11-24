@@ -182,6 +182,69 @@ class OsmAdapterTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_expanded_gauteng_east_rand_and_retained_presets_are_valid(self):
+        from worker.adapters.osm import GEOGRAPHIC_AREAS
+
+        expected_new = {
+            "benoni",
+            "boksburg",
+            "kempton_park",
+            "germiston",
+            "alberton",
+            "brakpan",
+            "springs",
+            "edenvale",
+            "johannesburg",
+            "pretoria",
+            "sandton",
+            "midrand",
+        }
+        retained = {
+            "cape_town_cbd",
+            "sandton_jhb",
+            "pretoria_east",
+            "durban_umhlanga",
+            "stellenbosch",
+            "gqeberha",
+        }
+        self.assertTrue(expected_new.issubset(GEOGRAPHIC_AREAS.keys()))
+        self.assertTrue(retained.issubset(GEOGRAPHIC_AREAS.keys()))
+
+        for key, info in GEOGRAPHIC_AREAS.items():
+            bbox = info["bbox"]
+            self.assertEqual(len(bbox), 4, f"{key} bbox must have 4 coords")
+            s, w, n, e = bbox
+            self.assertTrue(-90 <= s < n <= 90, f"{key} invalid lat bounds: {bbox}")
+            self.assertTrue(-180 <= w < e <= 180, f"{key} invalid lon bounds: {bbox}")
+            self.assertLessEqual(n - s, 0.35, f"{key} lat span exceeds 0.35 deg")
+            self.assertLessEqual(e - w, 0.35, f"{key} lon span exceeds 0.35 deg")
+            self.assertTrue(info.get("label"), f"{key} missing readable label")
+            ql = build_overpass_query(bbox, "retail_shops", limit=500)
+            self.assertIn("out center 100;", ql)  # Limit clamped cleanly at 100
+
+    def test_invalid_area_reversed_bbox_and_timeout_handling(self):
+        from unittest.mock import patch
+
+        adapter = OsmDiscoveryAdapter(
+            {},
+            env={"OSM_OVERPASS_URL": "https://user:secret-pass@custom-overpass.example.com/api/interpreter"},
+        )
+        st = adapter.get_status()
+        self.assertFalse(st["is_public_overpass"])
+        self.assertEqual(st["provider_mode"], "custom_overpass")
+        self.assertEqual(st["provider_url"], "https://custom-overpass.example.com/api/interpreter")
+        self.assertNotIn("secret-pass", json.dumps(st))
+
+        with self.assertRaises(ValueError):
+            adapter.discover_businesses(area="unknown_town", category="retail_shops")
+        with self.assertRaises(ValueError):
+            build_overpass_query([-26.1, 28.2, -26.2, 28.1], "retail_shops")
+
+        with patch("worker.adapters.osm.safe_fetch_bytes", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(OsmDiscoveryError) as cm_to:
+                adapter.discover_businesses(area="benoni", category="retail_shops", limit=15)
+            self.assertEqual(cm_to.exception.status_code, 504)
+
 
 if __name__ == "__main__":
     unittest.main()

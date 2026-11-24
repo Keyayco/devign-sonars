@@ -93,6 +93,7 @@ const dossierModal = createDossierModal($('dossier-backdrop'), {
       if (res.signal) {
         signalsView.replaceSignal(res.signal);
         showToast(res.signal.suppressed ? 'Entity suppressed (Do Not Contact)' : `Review saved: ${res.signal.review_status}`);
+        await Promise.all([loadDiscoveryData(), loadStatus()]);
         return res.signal;
       }
       return null;
@@ -124,7 +125,7 @@ const discoveryView = createDiscoveryView($('discovery-root'), {
     await Promise.all([loadDiscoveryData(), loadSignals(), loadStatus()]);
   },
   async onInspectSignal(id) {
-    let sig = signalsView.findById(id);
+    let sig = signalsView.findById(id) || discoveryView.findEntityById(id);
     if (!sig) {
       try {
         const res = await api.getSignalById(id);
@@ -137,12 +138,13 @@ const discoveryView = createDiscoveryView($('discovery-root'), {
     try {
       const res = await api.purgeExpiredRecords();
       showToast(`Purged ${res.deleted || 0} expired unapproved record(s)`);
-      await Promise.all([loadSignals(), loadStatus()]);
+      await Promise.all([loadDiscoveryData(), loadSignals(), loadStatus()]);
     } catch (err) {
       showToast(err.message || 'Retention purge failed');
     }
   },
   onRefreshSources: () => loadDiscoveryData(),
+  onEntityFilterChange: () => loadDiscoveryEntities(),
 });
 
 const configView = createConfigView($('config-root'), {
@@ -194,15 +196,19 @@ function applyStats(s) {
 
 function applyDbStats(db) {
   if (!db) return;
-  if (db.total != null) {
-    setText('s-total', db.total);
-    setText('lead-count', db.total);
+  const buyingCount = db.buying_intent_total != null ? db.buying_intent_total : db.total;
+  const entityCount = db.entity_discovery_total != null ? db.entity_discovery_total : 0;
+  if (buyingCount != null) {
+    setText('s-total', buyingCount);
+    setText('lead-count', buyingCount);
   }
+  setText('s-entities', entityCount);
+  setText('discovery-count', entityCount);
   if (db.high != null) setText('s-high', db.high);
   if (db.avg_score != null) setText('s-avg', db.avg_score || '—');
   if (db.total_dupes != null) setText('s-dupes', db.total_dupes);
   if (db.newest_at) {
-    setText('newest-signal-meta', `Latest signal: ${db.newest_at}`);
+    setText('newest-signal-meta', `Latest record: ${db.newest_at}`);
   } else {
     setText('newest-signal-meta', 'No signals recorded');
   }
@@ -293,11 +299,29 @@ async function loadSignals() {
   } catch {}
 }
 
+async function loadDiscoveryEntities() {
+  try {
+    const params = discoveryView.getEntityQueryParams();
+    const res = await api.getSignals({
+      record_kind: 'entity_discovery',
+      source: params.source,
+      limit: 25,
+      offset: 0,
+      sort: 'created_at',
+    });
+    discoveryView.setPersistedEntities({
+      entities: res.signals || [],
+      total: res.total != null ? res.total : 0,
+    });
+  } catch {}
+}
+
 async function loadDiscoveryData() {
   try {
     const [srcRes, runsRes] = await Promise.all([
       api.getDiscoverySources().catch(() => null),
       api.getDiscoveryRuns(20).catch(() => null),
+      loadDiscoveryEntities(),
     ]);
     if (srcRes && srcRes.sources) discoveryView.setSources(srcRes.sources);
     if (runsRes && Array.isArray(runsRes.runs)) discoveryView.setRuns(runsRes.runs);
@@ -435,7 +459,7 @@ $('btn-stop').addEventListener('click', async () => {
 });
 
 $('btn-refresh').addEventListener('click', async () => {
-  await Promise.all([loadStatus(), loadSignals()]);
+  await Promise.all([loadStatus(), loadSignals(), loadDiscoveryData()]);
   showToast('Data refreshed');
 });
 

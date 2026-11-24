@@ -263,17 +263,91 @@ test('db enforces POPIA review guardrails, suppression block on re-ingest, and r
     }, dbPath);
     assert.equal(reInserted, null);
 
-    // Expired unapproved entity gets purged, while approved entity is retained
+    // Expired unapproved entity gets purged, while approved, active, and unexpired records are retained
     const expired = db.insertLead({
       source_type: 'cipc',
       source_entity_id: '2019/000111/07',
       title: 'Expired Unapproved Entity',
+      observation_type: 'entity_verified',
       retention_until: 500,
     }, dbPath);
     assert.ok(expired);
+
+    const approvedKeep = db.insertLead({
+      source_type: 'osm',
+      source_entity_id: 'node/888001',
+      title: 'Approved Entity Kept',
+      observation_type: 'digital_presence_gap',
+      review_status: 'approved',
+      retention_until: 500,
+    }, dbPath);
+    assert.ok(approvedKeep);
+
+    const redditActive = db.insertLead({
+      source_type: 'reddit',
+      source_entity_id: 'https://www.reddit.com/r/forhire/comments/active1/test',
+      source_channel: 'r/forhire',
+      title: 'Active Contacted Buying Intent',
+      observation_type: 'buying_intent_signal',
+      intent_score: 80,
+      intent: 'high',
+      status: 'contacted',
+      retention_until: 500,
+    }, dbPath);
+    assert.ok(redditActive);
+
+    const personalRecord = db.insertLead({
+      source_type: 'cipc',
+      source_entity_id: '2022/999888/07',
+      title: 'Director PII Test',
+      observation_type: 'entity_verified',
+      is_personal_info: 1,
+      retention_until: 99999,
+    }, dbPath);
+    assert.ok(personalRecord);
+
+    // Personal info cannot be marked contact_eligible even when approved
+    const piiDenied = db.updateLeadReview(personalRecord.id, {
+      review_status: 'approved',
+      contact_eligible: true,
+    }, dbPath);
+    assert.equal(piiDenied.code, 400);
+
+    // Suppressed entity cannot be promoted to contact_eligible without explicit unsuppress
+    const supPromoDenied = db.updateLeadReview(entity.id, {
+      review_status: 'approved',
+      contact_eligible: true,
+    }, dbPath);
+    assert.equal(supPromoDenied.code, 400);
+
     const purgeRes = db.purgeExpiredRecords(2000, dbPath);
     assert.equal(purgeRes.deleted, 2); // suppressed entity (retention=1000) + unapproved entity (retention=500)
     assert.equal(db.getLeadById(expired.id, dbPath), null);
+    assert.ok(db.getLeadById(approvedKeep.id, dbPath));
+    assert.ok(db.getLeadById(redditActive.id, dbPath));
+    assert.ok(db.getLeadById(personalRecord.id, dbPath));
+
+    // Even after retention purge removed the lead row, suppression_list still blocks re-ingest
+    const blockedAfterPurge = db.insertLead({
+      source_type: 'osm',
+      source_entity_id: 'node/777001',
+      title: 'Harbour Books Re-Discovered Post-Purge',
+    }, dbPath);
+    assert.equal(blockedAfterPurge, null);
+
+    // Verify record_kind separation and separated stats
+    const buyingOnly = db.getLeads({ record_kind: 'buying_intent' }, dbPath);
+    assert.equal(buyingOnly.length, 1);
+    assert.equal(buyingOnly[0].record_kind, 'buying_intent');
+
+    const discoveryOnly = db.getLeads({ record_kind: 'entity_discovery' }, dbPath);
+    assert.equal(discoveryOnly.length, 2);
+    assert.ok(discoveryOnly.every(r => r.record_kind === 'entity_discovery'));
+
+    const stats = db.getDbStats(dbPath);
+    assert.equal(stats.buying_intent_total, 1);
+    assert.equal(stats.entity_discovery_total, 2);
+    assert.equal(stats.avg_score, 80); // Not diluted by 0-intent discovery records
   } finally {
     db.closeDb(dbPath);
     fs.rmSync(tmpDir, { recursive: true, force: true });

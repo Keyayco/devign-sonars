@@ -261,13 +261,13 @@ def _evaluate_cipc_signal(signal: CanonicalSignal) -> dict[str, Any]:
 
     if any(bad in status_text for bad in ("deregister", "liquidat", "dissolv", "final")):
         fit_score = 20
-        value_factors = [f"base 20 (inactive/non-trading status: {status_text or 'unknown'})"]
+        fit_factors = [f"base 20 (inactive/non-trading status: {status_text or 'unknown'})"]
     elif any(good in status_text for good in ("in business", "active", "registered")):
         fit_score = 55
-        value_factors = [f"base 55 (verified CIPC status: {status_text})"]
+        fit_factors = [f"base 55 (verified active CIPC entity status: {status_text}; NOT buying demand)"]
     else:
         fit_score = 45
-        value_factors = ["base 45 (official registry record; status unconfirmed)"]
+        fit_factors = ["base 45 (official registry record; status unconfirmed; NOT buying demand)"]
 
     confidence_score = 80
     confidence_factors = ["+80 source:cipc official registry"]
@@ -290,18 +290,23 @@ def _evaluate_cipc_signal(signal: CanonicalSignal) -> dict[str, Any]:
         "score": intent_score,
         "intent_score": intent_score,
         "intent": intent_tier,
-        "lead_value": fit_score,
+        "lead_value": 0,
         "fit_score": fit_score,
         "confidence_score": confidence_score,
         "opportunity_type": opportunity_type,
         "observation_type": observation_type,
+        "record_kind": "entity_discovery",
         "score_breakdown": {
+            "classification": "entity_discovery",
+            "is_buying_intent": False,
             "matched_keyword": signal.matched_keyword,
             "observation_type": observation_type,
             "intent_score": intent_score,
             "intent_factors": intent_factors,
-            "lead_value": fit_score,
-            "value_factors": value_factors,
+            "lead_value": 0,
+            "fit_score": fit_score,
+            "fit_factors": fit_factors,
+            "value_factors": fit_factors,
             "confidence_score": confidence_score,
             "confidence_factors": confidence_factors,
             "opportunity_type": opportunity_type,
@@ -326,16 +331,16 @@ def _evaluate_osm_signal(signal: CanonicalSignal) -> dict[str, Any]:
     if not has_website:
         observation_type = "digital_presence_gap"
         opportunity_type = "digital_need"
-        fit_score = 62
-        value_factors = [
-            "base 62 (no website tag observed in OpenStreetMap — possible digital-presence gap, NOT confirmed buying demand)"
+        fit_score = 42
+        fit_factors = [
+            "fit 42 (no website tag observed in OpenStreetMap — possible digital-presence gap, NOT confirmed buying demand)"
         ]
         action = "Manual Qualification — no website listed in OpenStreetMap (possible digital-presence gap, not confirmed buying intent). Verify independently before any outreach."
     else:
         observation_type = "contact_information_found" if has_contact else (signal.observation_type or "entity_discovered")
         opportunity_type = "entity_exists"
-        fit_score = 45
-        value_factors = ["base 45 (website tag already listed in OpenStreetMap)"]
+        fit_score = 30
+        fit_factors = ["fit 30 (website tag already listed in OpenStreetMap; directory presence only)"]
         action = "Hold / Audit — business already lists a website in OpenStreetMap; no buying-intent signal observed."
 
     confidence_score = 55
@@ -358,18 +363,23 @@ def _evaluate_osm_signal(signal: CanonicalSignal) -> dict[str, Any]:
         "score": intent_score,
         "intent_score": intent_score,
         "intent": intent_tier,
-        "lead_value": fit_score,
+        "lead_value": 0,
         "fit_score": fit_score,
         "confidence_score": confidence_score,
         "opportunity_type": opportunity_type,
         "observation_type": observation_type,
+        "record_kind": "entity_discovery",
         "score_breakdown": {
+            "classification": "entity_discovery",
+            "is_buying_intent": False,
             "matched_keyword": signal.matched_keyword,
             "observation_type": observation_type,
             "intent_score": intent_score,
             "intent_factors": intent_factors,
-            "lead_value": fit_score,
-            "value_factors": value_factors,
+            "lead_value": 0,
+            "fit_score": fit_score,
+            "fit_factors": fit_factors,
+            "value_factors": fit_factors,
             "confidence_score": confidence_score,
             "confidence_factors": confidence_factors,
             "opportunity_type": opportunity_type,
@@ -394,6 +404,7 @@ def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
     )
     action = recommend_action(opportunity_type, lead_value, confidence_score)
     observation_type = signal.observation_type or "buying_intent_signal"
+    record_kind = "buying_intent" if observation_type == "buying_intent_signal" else "entity_discovery"
 
     return {
         "score": intent_score,
@@ -404,12 +415,17 @@ def evaluate_signal(signal: CanonicalSignal) -> dict[str, Any]:
         "confidence_score": confidence_score,
         "opportunity_type": opportunity_type,
         "observation_type": observation_type,
+        "record_kind": record_kind,
         "score_breakdown": {
+            "classification": record_kind,
+            "is_buying_intent": record_kind == "buying_intent",
             "matched_keyword": signal.matched_keyword,
             "observation_type": observation_type,
             "intent_score": intent_score,
             "intent_factors": intent_factors,
             "lead_value": lead_value,
+            "fit_score": lead_value,
+            "fit_factors": value_factors,
             "value_factors": value_factors,
             "confidence_score": confidence_score,
             "confidence_factors": confidence_factors,
